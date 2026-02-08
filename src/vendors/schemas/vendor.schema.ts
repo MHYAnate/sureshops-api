@@ -59,6 +59,21 @@ class ShopImages {
   additionalImages?: string[];
 }
 
+@Schema({ _id: false })
+class OperatingHours {
+  @Prop()
+  openingTime?: string;
+
+  @Prop()
+  closingTime?: string;
+
+  @Prop([String])
+  operatingDays?: string[];
+
+  @Prop({ default: false })
+  is24Hours?: boolean;
+}
+
 @Schema({ timestamps: true })
 export class Vendor extends Document {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
@@ -117,22 +132,16 @@ export class Vendor extends Document {
   @Prop({ type: BankDetails })
   bankDetails?: BankDetails;
 
-  // Categories
+  // Operating Hours
+  @Prop({ type: OperatingHours })
+  operatingHours?: OperatingHours;
+
+  // Categories of products sold
   @Prop([String])
   categories?: string[];
 
   @Prop([String])
   tags?: string[];
-
-  // Operating Hours
-  @Prop()
-  openingTime?: string;
-
-  @Prop()
-  closingTime?: string;
-
-  @Prop([String])
-  operatingDays?: string[];
 
   // Statistics
   @Prop({ default: 0 })
@@ -142,10 +151,20 @@ export class Vendor extends Document {
   totalViews: number;
 
   @Prop({ default: 0 })
+  searchAppearances: number;
+
+  @Prop({ default: 0 })
   rating: number;
 
   @Prop({ default: 0 })
   reviewCount: number;
+
+  // Price Range (computed from products)
+  @Prop({ default: 0 })
+  minProductPrice: number;
+
+  @Prop({ default: 0 })
+  maxProductPrice: number;
 
   // Status
   @Prop({ default: true })
@@ -156,6 +175,9 @@ export class Vendor extends Document {
 
   @Prop({ default: false })
   isFeatured: boolean;
+
+  @Prop({ default: true })
+  isOpen: boolean;
 }
 
 export const VendorSchema = SchemaFactory.createForClass(Vendor);
@@ -165,4 +187,5 @@ VendorSchema.index({ stateId: 1, areaId: 1, marketId: 1 });
 VendorSchema.index({ userId: 1 });
 VendorSchema.index({ vendorType: 1 });
 VendorSchema.index({ categories: 1 });
-VendorSchema.index({ businessName: 'text', businessDescription: 'text' });
+VendorSchema.index({ isActive: 1, isVerified: 1 });
+VendorSchema.index({ businessName: 'text', businessDescription: 'text', tags: 'text' });
