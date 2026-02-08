@@ -188,7 +188,7 @@ export interface ShopSearchResult {
 }
 
 export interface SearchResults {
-  query: string;
+  query: string | undefined; 
   searchType: string;
   
   products?: {

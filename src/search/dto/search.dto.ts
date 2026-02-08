@@ -1,4 +1,12 @@
-import { IsOptional, IsString, IsEnum, IsNumber, IsMongoId, IsBoolean, IsArray } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsEnum,
+  IsNumber,
+  IsMongoId,
+  IsBoolean,
+  IsArray,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 export enum SearchType {
@@ -18,8 +26,9 @@ export enum SortBy {
 }
 
 export class SearchDto {
+  @IsOptional()
   @IsString()
-  query: string;
+  query?: string;
 
   @IsOptional()
   @IsEnum(SearchType)
@@ -52,7 +61,7 @@ export class SearchDto {
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
-  maxDistance?: number = 10; // in km
+  maxDistance?: number = 10;
 
   // Category Filters
   @IsOptional()
@@ -123,7 +132,13 @@ export class ProductSearchDto extends SearchDto {
 
 export class ShopSearchDto extends SearchDto {
   @IsOptional()
-  @IsEnum(['market_shop', 'mall_shop', 'home_based', 'street_shop', 'online_only'])
+  @IsEnum([
+    'market_shop',
+    'mall_shop',
+    'home_based',
+    'street_shop',
+    'online_only',
+  ])
   vendorType?: string;
 
   @IsOptional()
