@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, PipelineStage } from 'mongoose';
+import { Model, PipelineStage, Types } from 'mongoose';
 import { Product } from '../products/schemas/product.schema';
 import { Vendor } from '../vendors/schemas/vendor.schema';
 import { CatalogItem } from '../catalog/schemas/catalog-item.schema';
@@ -30,13 +30,12 @@ export class SearchService {
 
   async search(dto: SearchDto): Promise<SearchResults> {
     const startTime = Date.now();
-    
-    // Set default searchType if not provided
+
     const searchType = dto.searchType || SearchType.ALL;
-    
+
     const results: SearchResults = {
       query: dto.query,
-      searchType: searchType.toString(), // Convert to string
+      searchType: searchType.toString(),
       availableFilters: {
         states: [],
         areas: [],
@@ -51,29 +50,34 @@ export class SearchService {
       },
     };
 
-    switch (searchType) {
-      case SearchType.PRODUCTS:
-        results.products = await this.searchProducts(dto);
-        results.productComparison = await this.getProductComparison(dto);
-        break;
-      case SearchType.SHOPS:
-        results.shops = await this.searchShops(dto);
-        break;
-      case SearchType.ALL:
-      default:
-        const [products, shops] = await Promise.all([
-          this.searchProducts(dto),
-          this.searchShops(dto),
-        ]);
-        results.products = products;
-        results.shops = shops;
-        results.productComparison = await this.getProductComparison(dto);
-        break;
+    try {
+      switch (searchType) {
+        case SearchType.PRODUCTS:
+          results.products = await this.searchProducts(dto);
+          results.productComparison = await this.getProductComparison(dto);
+          break;
+        case SearchType.SHOPS:
+          results.shops = await this.searchShops(dto);
+          break;
+        case SearchType.ALL:
+        default:
+          const [products, shops, productComparison] = await Promise.all([
+            this.searchProducts(dto),
+            this.searchShops(dto),
+            this.getProductComparison(dto),
+          ]);
+          results.products = products;
+          results.shops = shops;
+          results.productComparison = productComparison;
+          break;
+      }
+
+      results.availableFilters = await this.getAvailableFilters(dto);
+    } catch (error) {
+      console.error('Search error:', error.message, error.stack);
+      throw error;
     }
 
-    // Get available filters
-    results.availableFilters = await this.getAvailableFilters(dto);
-    
     results.meta.took = Date.now() - startTime;
     return results;
   }
@@ -88,22 +92,57 @@ export class SearchService {
     const skip = (page - 1) * limit;
 
     const pipeline: PipelineStage[] = [];
+    const isGeoSearch = !!(dto.longitude && dto.latitude);
 
-    // Match stage
-    const matchStage: Record<string, any> = {
-      isActive: true,
-      status: ProductStatus.APPROVED,
-    };
+    // $geoNear MUST be the first stage in the pipeline if doing geo search
+    if (isGeoSearch) {
+      pipeline.push({
+        $geoNear: {
+          near: {
+            type: 'Point',
+            coordinates: [dto.longitude!, dto.latitude!],
+          },
+          distanceField: 'distance',
+          maxDistance: (dto.maxDistance || 10) * 1000,
+          spherical: true,
+          query: {
+            isActive: true,
+            status: ProductStatus.APPROVED,
+          },
+        },
+      });
+    }
 
-    // Text search
+    // Build match stage
+    const matchStage: Record<string, any> = {};
+
+    // Only add isActive and status if NOT already in $geoNear query
+    if (!isGeoSearch) {
+      matchStage.isActive = true;
+      matchStage.status = ProductStatus.APPROVED;
+    }
+
+    // Text search - use regex fallback when combining with $geoNear
+    const usedTextSearch = !!(dto.query && !isGeoSearch);
     if (dto.query) {
-      matchStage.$text = { $search: dto.query };
+      if (isGeoSearch) {
+        // Fallback to regex when combining with $geoNear
+        matchStage.$or = [
+          { name: { $regex: dto.query, $options: 'i' } },
+          { description: { $regex: dto.query, $options: 'i' } },
+          { brand: { $regex: dto.query, $options: 'i' } },
+          { tags: { $in: [new RegExp(dto.query, 'i')] } },
+        ];
+      } else {
+        // Use $text for non-geo searches (better relevance)
+        matchStage.$text = { $search: dto.query };
+      }
     }
 
     // Location filters
-    if (dto.stateId) matchStage.stateId = dto.stateId;
-    if (dto.areaId) matchStage.areaId = dto.areaId;
-    if (dto.marketId) matchStage.marketId = dto.marketId;
+    if (dto.stateId) matchStage.stateId = new Types.ObjectId(dto.stateId);
+    if (dto.areaId) matchStage.areaId = new Types.ObjectId(dto.areaId);
+    if (dto.marketId) matchStage.marketId = new Types.ObjectId(dto.marketId);
 
     // Category filters
     if (dto.category) matchStage.category = dto.category;
@@ -122,20 +161,10 @@ export class SearchService {
       matchStage.inStock = dto.inStock;
     }
 
-    // Geo query
-    if (dto.longitude && dto.latitude) {
-      matchStage.location = {
-        $near: {
-          $geometry: {
-            type: 'Point',
-            coordinates: [dto.longitude, dto.latitude],
-          },
-          $maxDistance: (dto.maxDistance || 10) * 1000,
-        },
-      };
+    // Only add $match if there are conditions
+    if (Object.keys(matchStage).length > 0) {
+      pipeline.push({ $match: matchStage });
     }
-
-    pipeline.push({ $match: matchStage });
 
     // Lookup vendor
     pipeline.push({
@@ -162,7 +191,9 @@ export class SearchService {
         as: 'state',
       },
     });
-    pipeline.push({ $unwind: { path: '$state', preserveNullAndEmptyArrays: true } });
+    pipeline.push({
+      $unwind: { path: '$state', preserveNullAndEmptyArrays: true },
+    });
 
     // Lookup area
     pipeline.push({
@@ -173,7 +204,9 @@ export class SearchService {
         as: 'area',
       },
     });
-    pipeline.push({ $unwind: { path: '$area', preserveNullAndEmptyArrays: true } });
+    pipeline.push({
+      $unwind: { path: '$area', preserveNullAndEmptyArrays: true },
+    });
 
     // Lookup market
     pipeline.push({
@@ -184,10 +217,12 @@ export class SearchService {
         as: 'market',
       },
     });
-    pipeline.push({ $unwind: { path: '$market', preserveNullAndEmptyArrays: true } });
+    pipeline.push({
+      $unwind: { path: '$market', preserveNullAndEmptyArrays: true },
+    });
 
-    // Add text score if text search
-    if (dto.query) {
+    // Add text score only if $text was used
+    if (usedTextSearch) {
       pipeline.push({
         $addFields: {
           textScore: { $meta: 'textScore' },
@@ -204,6 +239,10 @@ export class SearchService {
       case SortBy.PRICE_HIGH:
         sortStage.price = -1;
         break;
+      case SortBy.DISTANCE:
+        if (isGeoSearch) sortStage.distance = 1;
+        else sortStage.createdAt = -1;
+        break;
       case SortBy.RATING:
         sortStage['vendor.rating'] = -1;
         break;
@@ -215,8 +254,10 @@ export class SearchService {
         break;
       case SortBy.RELEVANCE:
       default:
-        if (dto.query) {
+        if (usedTextSearch) {
           sortStage.textScore = -1;
+        } else if (isGeoSearch) {
+          sortStage.distance = 1;
         }
         sortStage.createdAt = -1;
         break;
@@ -246,6 +287,7 @@ export class SearchService {
         originalPrice: 1,
         currency: 1,
         inStock: 1,
+        distance: isGeoSearch ? 1 : '$$REMOVE',
         vendor: {
           id: '$vendor._id',
           businessName: '$vendor.businessName',
@@ -275,11 +317,13 @@ export class SearchService {
     const products = await this.productModel.aggregate(pipeline);
 
     // Update search appearances
-    const productIds = products.map((p) => p.id);
-    await this.productModel.updateMany(
-      { _id: { $in: productIds } },
-      { $inc: { searchAppearances: 1 } },
-    );
+    if (products.length > 0) {
+      const productIds = products.map((p) => p.id);
+      await this.productModel.updateMany(
+        { _id: { $in: productIds } },
+        { $inc: { searchAppearances: 1 } },
+      );
+    }
 
     return {
       items: products as ProductSearchResult[],
@@ -293,7 +337,6 @@ export class SearchService {
     items: ProductWithVendors[];
     total: number;
   }> {
-    // Group products by name/sku to show price comparison across vendors
     const pipeline: PipelineStage[] = [];
 
     const matchStage: Record<string, any> = {
@@ -301,16 +344,19 @@ export class SearchService {
       status: ProductStatus.APPROVED,
     };
 
+    // Use regex only - $text cannot be inside $or
     if (dto.query) {
       matchStage.$or = [
         { name: { $regex: dto.query, $options: 'i' } },
-        { $text: { $search: dto.query } },
+        { description: { $regex: dto.query, $options: 'i' } },
+        { brand: { $regex: dto.query, $options: 'i' } },
+        { tags: { $in: [new RegExp(dto.query, 'i')] } },
       ];
     }
 
-    if (dto.stateId) matchStage.stateId = dto.stateId;
-    if (dto.areaId) matchStage.areaId = dto.areaId;
-    if (dto.marketId) matchStage.marketId = dto.marketId;
+    if (dto.stateId) matchStage.stateId = new Types.ObjectId(dto.stateId);
+    if (dto.areaId) matchStage.areaId = new Types.ObjectId(dto.areaId);
+    if (dto.marketId) matchStage.marketId = new Types.ObjectId(dto.marketId);
     if (dto.category) matchStage.category = dto.category;
 
     pipeline.push({ $match: matchStage });
@@ -335,7 +381,9 @@ export class SearchService {
         as: 'state',
       },
     });
-    pipeline.push({ $unwind: { path: '$state', preserveNullAndEmptyArrays: true } });
+    pipeline.push({
+      $unwind: { path: '$state', preserveNullAndEmptyArrays: true },
+    });
 
     pipeline.push({
       $lookup: {
@@ -345,7 +393,9 @@ export class SearchService {
         as: 'area',
       },
     });
-    pipeline.push({ $unwind: { path: '$area', preserveNullAndEmptyArrays: true } });
+    pipeline.push({
+      $unwind: { path: '$area', preserveNullAndEmptyArrays: true },
+    });
 
     pipeline.push({
       $lookup: {
@@ -355,14 +405,16 @@ export class SearchService {
         as: 'market',
       },
     });
-    pipeline.push({ $unwind: { path: '$market', preserveNullAndEmptyArrays: true } });
+    pipeline.push({
+      $unwind: { path: '$market', preserveNullAndEmptyArrays: true },
+    });
 
     // Group by product name (or sku/barcode if available)
     pipeline.push({
       $group: {
         _id: {
           $cond: [
-            { $ne: ['$sku', null] },
+            { $and: [{ $ne: ['$sku', null] }, { $ne: ['$sku', ''] }] },
             '$sku',
             { $toLower: '$name' },
           ],
@@ -396,7 +448,11 @@ export class SearchService {
             location: {
               state: { id: '$state._id', name: '$state.name' },
               area: { id: '$area._id', name: '$area.name' },
-              market: { id: '$market._id', name: '$market.name', type: '$market.type' },
+              market: {
+                id: '$market._id',
+                name: '$market.name',
+                type: '$market.type',
+              },
               shopNumber: '$vendor.shopNumber',
               shopFloor: '$vendor.shopFloor',
               shopBlock: '$vendor.shopBlock',
@@ -455,12 +511,19 @@ export class SearchService {
       },
     });
 
-    const results = await this.productModel.aggregate(pipeline);
-
-    return {
-      items: results as ProductWithVendors[],
-      total: results.length,
-    };
+    try {
+      const results = await this.productModel.aggregate(pipeline);
+      return {
+        items: results as ProductWithVendors[],
+        total: results.length,
+      };
+    } catch (error) {
+      console.error('Product comparison error:', error.message);
+      return {
+        items: [],
+        total: 0,
+      };
+    }
   }
 
   async searchShops(dto: ShopSearchDto): Promise<{
@@ -473,12 +536,31 @@ export class SearchService {
     const skip = (page - 1) * limit;
 
     const pipeline: PipelineStage[] = [];
+    const isGeoSearch = !!(dto.longitude && dto.latitude);
 
-    const matchStage: Record<string, any> = {
-      isActive: true,
-    };
+    // $geoNear MUST be the first stage if doing geo search
+    if (isGeoSearch) {
+      pipeline.push({
+        $geoNear: {
+          near: {
+            type: 'Point',
+            coordinates: [dto.longitude!, dto.latitude!],
+          },
+          distanceField: 'distance',
+          maxDistance: (dto.maxDistance || 10) * 1000,
+          spherical: true,
+          query: { isActive: true },
+        },
+      });
+    }
 
-    // Text search
+    const matchStage: Record<string, any> = {};
+
+    if (!isGeoSearch) {
+      matchStage.isActive = true;
+    }
+
+    // Text search using regex (safe for all cases)
     if (dto.query) {
       matchStage.$or = [
         { businessName: { $regex: dto.query, $options: 'i' } },
@@ -489,9 +571,9 @@ export class SearchService {
     }
 
     // Location filters
-    if (dto.stateId) matchStage.stateId = dto.stateId;
-    if (dto.areaId) matchStage.areaId = dto.areaId;
-    if (dto.marketId) matchStage.marketId = dto.marketId;
+    if (dto.stateId) matchStage.stateId = new Types.ObjectId(dto.stateId);
+    if (dto.areaId) matchStage.areaId = new Types.ObjectId(dto.areaId);
+    if (dto.marketId) matchStage.marketId = new Types.ObjectId(dto.marketId);
 
     // Vendor type
     if (dto.vendorType) matchStage.vendorType = dto.vendorType;
@@ -507,20 +589,10 @@ export class SearchService {
       matchStage.categories = { $in: [dto.category] };
     }
 
-    // Geo query
-    if (dto.longitude && dto.latitude) {
-      matchStage.location = {
-        $near: {
-          $geometry: {
-            type: 'Point',
-            coordinates: [dto.longitude, dto.latitude],
-          },
-          $maxDistance: (dto.maxDistance || 10) * 1000,
-        },
-      };
+    // Only add $match if there are conditions
+    if (Object.keys(matchStage).length > 0) {
+      pipeline.push({ $match: matchStage });
     }
-
-    pipeline.push({ $match: matchStage });
 
     // Lookup state
     pipeline.push({
@@ -531,7 +603,9 @@ export class SearchService {
         as: 'state',
       },
     });
-    pipeline.push({ $unwind: { path: '$state', preserveNullAndEmptyArrays: true } });
+    pipeline.push({
+      $unwind: { path: '$state', preserveNullAndEmptyArrays: true },
+    });
 
     // Lookup area
     pipeline.push({
@@ -542,7 +616,9 @@ export class SearchService {
         as: 'area',
       },
     });
-    pipeline.push({ $unwind: { path: '$area', preserveNullAndEmptyArrays: true } });
+    pipeline.push({
+      $unwind: { path: '$area', preserveNullAndEmptyArrays: true },
+    });
 
     // Lookup market
     pipeline.push({
@@ -553,7 +629,9 @@ export class SearchService {
         as: 'market',
       },
     });
-    pipeline.push({ $unwind: { path: '$market', preserveNullAndEmptyArrays: true } });
+    pipeline.push({
+      $unwind: { path: '$market', preserveNullAndEmptyArrays: true },
+    });
 
     // Lookup featured products
     pipeline.push({
@@ -565,7 +643,7 @@ export class SearchService {
             $match: {
               $expr: { $eq: ['$vendorId', '$$vendorId'] },
               isActive: true,
-              status: 'approved',
+              status: ProductStatus.APPROVED,
             },
           },
           { $sort: { views: -1 } },
@@ -595,7 +673,14 @@ export class SearchService {
       case SortBy.NEWEST:
         sortStage.createdAt = -1;
         break;
+      case SortBy.DISTANCE:
+        if (isGeoSearch) sortStage.distance = 1;
+        else sortStage.createdAt = -1;
+        break;
       default:
+        if (isGeoSearch) {
+          sortStage.distance = 1;
+        }
         sortStage.isFeatured = -1;
         sortStage.isVerified = -1;
         sortStage.rating = -1;
@@ -628,6 +713,7 @@ export class SearchService {
         isVerified: 1,
         isFeatured: 1,
         categories: 1,
+        distance: isGeoSearch ? 1 : '$$REMOVE',
         priceRange: {
           min: '$minProductPrice',
           max: '$maxProductPrice',
@@ -642,7 +728,11 @@ export class SearchService {
         location: {
           state: { id: '$state._id', name: '$state.name' },
           area: { id: '$area._id', name: '$area.name' },
-          market: { id: '$market._id', name: '$market.name', type: '$market.type' },
+          market: {
+            id: '$market._id',
+            name: '$market.name',
+            type: '$market.type',
+          },
           shopNumber: 1,
           shopFloor: 1,
           shopBlock: 1,
@@ -663,11 +753,13 @@ export class SearchService {
     const shops = await this.vendorModel.aggregate(pipeline);
 
     // Update search appearances
-    const vendorIds = shops.map((s) => s.id);
-    await this.vendorModel.updateMany(
-      { _id: { $in: vendorIds } },
-      { $inc: { searchAppearances: 1 } },
-    );
+    if (shops.length > 0) {
+      const vendorIds = shops.map((s) => s.id);
+      await this.vendorModel.updateMany(
+        { _id: { $in: vendorIds } },
+        { $inc: { searchAppearances: 1 } },
+      );
+    }
 
     return {
       items: shops as ShopSearchResult[],
@@ -690,176 +782,207 @@ export class SearchService {
       status: ProductStatus.APPROVED,
     };
 
+    // Use regex instead of $text for filter aggregation
     if (dto.query) {
       matchStage.$or = [
         { name: { $regex: dto.query, $options: 'i' } },
         { description: { $regex: dto.query, $options: 'i' } },
+        { brand: { $regex: dto.query, $options: 'i' } },
+        { tags: { $in: [new RegExp(dto.query, 'i')] } },
       ];
     }
 
-    // States
-    const statesAgg = await this.productModel.aggregate([
-      { $match: matchStage },
-      {
-        $lookup: {
-          from: 'states',
-          localField: 'stateId',
-          foreignField: '_id',
-          as: 'state',
+    try {
+      // States
+      const statesAgg = await this.productModel.aggregate([
+        { $match: matchStage },
+        {
+          $lookup: {
+            from: 'states',
+            localField: 'stateId',
+            foreignField: '_id',
+            as: 'state',
+          },
         },
-      },
-      { $unwind: '$state' },
-      {
-        $group: {
-          _id: '$state._id',
-          name: { $first: '$state.name' },
-          count: { $sum: 1 },
+        { $unwind: '$state' },
+        {
+          $group: {
+            _id: '$state._id',
+            name: { $first: '$state.name' },
+            count: { $sum: 1 },
+          },
         },
-      },
-      { $sort: { count: -1 } },
-      { $limit: 20 },
-      {
-        $project: {
-          id: '$_id',
-          name: 1,
-          count: 1,
-          _id: 0,
+        { $sort: { count: -1 } },
+        { $limit: 20 },
+        {
+          $project: {
+            id: '$_id',
+            name: 1,
+            count: 1,
+            _id: 0,
+          },
         },
-      },
-    ]);
+      ]);
 
-    // Areas (filtered by state if provided)
-    const areasMatch = { ...matchStage };
-    if (dto.stateId) areasMatch.stateId = dto.stateId;
+      // Areas (filtered by state if provided)
+      const areasMatch = { ...matchStage };
+      if (dto.stateId) areasMatch.stateId = new Types.ObjectId(dto.stateId);
 
-    const areasAgg = await this.productModel.aggregate([
-      { $match: areasMatch },
-      {
-        $lookup: {
-          from: 'areas',
-          localField: 'areaId',
-          foreignField: '_id',
-          as: 'area',
+      const areasAgg = await this.productModel.aggregate([
+        { $match: areasMatch },
+        {
+          $lookup: {
+            from: 'areas',
+            localField: 'areaId',
+            foreignField: '_id',
+            as: 'area',
+          },
         },
-      },
-      { $unwind: '$area' },
-      {
-        $group: {
-          _id: '$area._id',
-          name: { $first: '$area.name' },
-          count: { $sum: 1 },
+        { $unwind: '$area' },
+        {
+          $group: {
+            _id: '$area._id',
+            name: { $first: '$area.name' },
+            count: { $sum: 1 },
+          },
         },
-      },
-      { $sort: { count: -1 } },
-      { $limit: 20 },
-      {
-        $project: {
-          id: '$_id',
-          name: 1,
-          count: 1,
-          _id: 0,
+        { $sort: { count: -1 } },
+        { $limit: 20 },
+        {
+          $project: {
+            id: '$_id',
+            name: 1,
+            count: 1,
+            _id: 0,
+          },
         },
-      },
-    ]);
+      ]);
 
-    // Markets (filtered by area if provided)
-    const marketsMatch = { ...matchStage };
-    if (dto.stateId) marketsMatch.stateId = dto.stateId;
-    if (dto.areaId) marketsMatch.areaId = dto.areaId;
+      // Markets (filtered by area if provided)
+      const marketsMatch = { ...matchStage };
+      if (dto.stateId)
+        marketsMatch.stateId = new Types.ObjectId(dto.stateId);
+      if (dto.areaId) marketsMatch.areaId = new Types.ObjectId(dto.areaId);
 
-    const marketsAgg = await this.productModel.aggregate([
-      { $match: { ...marketsMatch, marketId: { $exists: true, $ne: null } } },
-      {
-        $lookup: {
-          from: 'markets',
-          localField: 'marketId',
-          foreignField: '_id',
-          as: 'market',
+      const marketsAgg = await this.productModel.aggregate([
+        {
+          $match: {
+            ...marketsMatch,
+            marketId: { $exists: true, $ne: null },
+          },
         },
-      },
-      { $unwind: '$market' },
-      {
-        $group: {
-          _id: '$market._id',
-          name: { $first: '$market.name' },
-          count: { $sum: 1 },
+        {
+          $lookup: {
+            from: 'markets',
+            localField: 'marketId',
+            foreignField: '_id',
+            as: 'market',
+          },
         },
-      },
-      { $sort: { count: -1 } },
-      { $limit: 20 },
-      {
-        $project: {
-          id: '$_id',
-          name: 1,
-          count: 1,
-          _id: 0,
+        { $unwind: '$market' },
+        {
+          $group: {
+            _id: '$market._id',
+            name: { $first: '$market.name' },
+            count: { $sum: 1 },
+          },
         },
-      },
-    ]);
+        { $sort: { count: -1 } },
+        { $limit: 20 },
+        {
+          $project: {
+            id: '$_id',
+            name: 1,
+            count: 1,
+            _id: 0,
+          },
+        },
+      ]);
 
-    // Categories
-    const categoriesAgg = await this.productModel.aggregate([
-      { $match: matchStage },
-      {
-        $group: {
-          _id: '$category',
-          count: { $sum: 1 },
+      // Categories
+      const categoriesAgg = await this.productModel.aggregate([
+        { $match: matchStage },
+        {
+          $group: {
+            _id: '$category',
+            count: { $sum: 1 },
+          },
         },
-      },
-      { $sort: { count: -1 } },
-      { $limit: 20 },
-      {
-        $project: {
-          name: '$_id',
-          count: 1,
-          _id: 0,
+        { $sort: { count: -1 } },
+        { $limit: 20 },
+        {
+          $project: {
+            name: '$_id',
+            count: 1,
+            _id: 0,
+          },
         },
-      },
-    ]);
+      ]);
 
-    // Brands
-    const brandsAgg = await this.productModel.aggregate([
-      { $match: { ...matchStage, brand: { $exists: true, $ne: null } } },
-      {
-        $group: {
-          _id: '$brand',
-          count: { $sum: 1 },
+      // Brands
+      const brandsAgg = await this.productModel.aggregate([
+        {
+          $match: {
+            ...matchStage,
+            brand: { $exists: true, $nin: [null, ''] }
+          },
         },
-      },
-      { $sort: { count: -1 } },
-      { $limit: 20 },
-      {
-        $project: {
-          name: '$_id',
-          count: 1,
-          _id: 0,
+        {
+          $group: {
+            _id: '$brand',
+            count: { $sum: 1 },
+          },
         },
-      },
-    ]);
+        { $sort: { count: -1 } },
+        { $limit: 20 },
+        {
+          $project: {
+            name: '$_id',
+            count: 1,
+            _id: 0,
+          },
+        },
+      ]);
 
-    // Price range
-    const priceAgg = await this.productModel.aggregate([
-      { $match: matchStage },
-      {
-        $group: {
-          _id: null,
-          min: { $min: '$price' },
-          max: { $max: '$price' },
+      // Price range
+      const priceAgg = await this.productModel.aggregate([
+        { $match: matchStage },
+        {
+          $group: {
+            _id: null,
+            min: { $min: '$price' },
+            max: { $max: '$price' },
+          },
         },
-      },
-    ]);
+      ]);
 
-    return {
-      states: statesAgg,
-      areas: areasAgg,
-      markets: marketsAgg,
-      categories: categoriesAgg,
-      brands: brandsAgg,
-      priceRange: priceAgg[0] || { min: 0, max: 0 },
-    };
+      return {
+        states: statesAgg,
+        areas: areasAgg,
+        markets: marketsAgg,
+        categories: categoriesAgg,
+        brands: brandsAgg,
+        priceRange: priceAgg[0]
+          ? { min: priceAgg[0].min, max: priceAgg[0].max }
+          : { min: 0, max: 0 },
+      };
+    } catch (error) {
+      console.error('Filter aggregation error:', error.message);
+      return {
+        states: [],
+        areas: [],
+        markets: [],
+        categories: [],
+        brands: [],
+        priceRange: { min: 0, max: 0 },
+      };
+    }
   }
 
-  async getProductVendors(productName: string, filters: SearchDto): Promise<ProductWithVendors> {
+  async getProductVendors(
+    productName: string,
+    filters: SearchDto,
+  ): Promise<ProductWithVendors> {
     const pipeline: PipelineStage[] = [];
 
     const matchStage: Record<string, any> = {
@@ -872,14 +995,23 @@ export class SearchService {
       ],
     };
 
-    if (filters.stateId) matchStage.stateId = filters.stateId;
-    if (filters.areaId) matchStage.areaId = filters.areaId;
-    if (filters.marketId) matchStage.marketId = filters.marketId;
+    if (filters.stateId)
+      matchStage.stateId = new Types.ObjectId(filters.stateId);
+    if (filters.areaId)
+      matchStage.areaId = new Types.ObjectId(filters.areaId);
+    if (filters.marketId)
+      matchStage.marketId = new Types.ObjectId(filters.marketId);
     if (filters.minPrice !== undefined) {
-      matchStage.price = { ...matchStage.price, $gte: filters.minPrice };
+      matchStage.price = {
+        ...(matchStage.price || {}),
+        $gte: filters.minPrice,
+      };
     }
     if (filters.maxPrice !== undefined) {
-      matchStage.price = { ...matchStage.price, $lte: filters.maxPrice };
+      matchStage.price = {
+        ...(matchStage.price || {}),
+        $lte: filters.maxPrice,
+      };
     }
 
     pipeline.push({ $match: matchStage });
@@ -904,7 +1036,9 @@ export class SearchService {
         as: 'state',
       },
     });
-    pipeline.push({ $unwind: { path: '$state', preserveNullAndEmptyArrays: true } });
+    pipeline.push({
+      $unwind: { path: '$state', preserveNullAndEmptyArrays: true },
+    });
 
     pipeline.push({
       $lookup: {
@@ -914,7 +1048,9 @@ export class SearchService {
         as: 'area',
       },
     });
-    pipeline.push({ $unwind: { path: '$area', preserveNullAndEmptyArrays: true } });
+    pipeline.push({
+      $unwind: { path: '$area', preserveNullAndEmptyArrays: true },
+    });
 
     pipeline.push({
       $lookup: {
@@ -924,7 +1060,9 @@ export class SearchService {
         as: 'market',
       },
     });
-    pipeline.push({ $unwind: { path: '$market', preserveNullAndEmptyArrays: true } });
+    pipeline.push({
+      $unwind: { path: '$market', preserveNullAndEmptyArrays: true },
+    });
 
     // Group to get all vendors
     pipeline.push({
@@ -959,7 +1097,11 @@ export class SearchService {
             location: {
               state: { id: '$state._id', name: '$state.name' },
               area: { id: '$area._id', name: '$area.name' },
-              market: { id: '$market._id', name: '$market.name', type: '$market.type' },
+              market: {
+                id: '$market._id',
+                name: '$market.name',
+                type: '$market.type',
+              },
               shopNumber: '$vendor.shopNumber',
               shopFloor: '$vendor.shopFloor',
               shopBlock: '$vendor.shopBlock',
@@ -1017,7 +1159,13 @@ export class SearchService {
 
   async getShopProducts(
     vendorId: string,
-    filters: { category?: string; minPrice?: number; maxPrice?: number; page?: number; limit?: number },
+    filters: {
+      category?: string;
+      minPrice?: number;
+      maxPrice?: number;
+      page?: number;
+      limit?: number;
+    },
   ): Promise<{
     shop: ShopSearchResult;
     products: ProductSearchResult[];
@@ -1030,7 +1178,7 @@ export class SearchService {
 
     // Get shop details
     const shopPipeline: PipelineStage[] = [
-      { $match: { _id: vendorId } },
+      { $match: { _id: new Types.ObjectId(vendorId) } },
       {
         $lookup: {
           from: 'states',
@@ -1039,7 +1187,9 @@ export class SearchService {
           as: 'state',
         },
       },
-      { $unwind: { path: '$state', preserveNullAndEmptyArrays: true } },
+      {
+        $unwind: { path: '$state', preserveNullAndEmptyArrays: true },
+      },
       {
         $lookup: {
           from: 'areas',
@@ -1048,7 +1198,9 @@ export class SearchService {
           as: 'area',
         },
       },
-      { $unwind: { path: '$area', preserveNullAndEmptyArrays: true } },
+      {
+        $unwind: { path: '$area', preserveNullAndEmptyArrays: true },
+      },
       {
         $lookup: {
           from: 'markets',
@@ -1057,15 +1209,27 @@ export class SearchService {
           as: 'market',
         },
       },
-      { $unwind: { path: '$market', preserveNullAndEmptyArrays: true } },
+      {
+        $unwind: { path: '$market', preserveNullAndEmptyArrays: true },
+      },
     ];
 
     const shopResult = await this.vendorModel.aggregate(shopPipeline);
     const shop = shopResult[0];
 
+    if (!shop) {
+      return {
+        shop: null as any,
+        products: [],
+        total: 0,
+        page,
+        totalPages: 0,
+      };
+    }
+
     // Get products
     const productMatch: Record<string, any> = {
-      vendorId: vendorId,
+      vendorId: new Types.ObjectId(vendorId),
       isActive: true,
       status: ProductStatus.APPROVED,
     };
@@ -1073,8 +1237,10 @@ export class SearchService {
     if (filters.category) productMatch.category = filters.category;
     if (filters.minPrice !== undefined || filters.maxPrice !== undefined) {
       productMatch.price = {};
-      if (filters.minPrice !== undefined) productMatch.price.$gte = filters.minPrice;
-      if (filters.maxPrice !== undefined) productMatch.price.$lte = filters.maxPrice;
+      if (filters.minPrice !== undefined)
+        productMatch.price.$gte = filters.minPrice;
+      if (filters.maxPrice !== undefined)
+        productMatch.price.$lte = filters.maxPrice;
     }
 
     const [products, total] = await Promise.all([
@@ -1112,9 +1278,16 @@ export class SearchService {
           },
         },
         location: {
-          state: { id: shop.state?._id?.toString(), name: shop.state?.name },
+          state: {
+            id: shop.state?._id?.toString(),
+            name: shop.state?.name,
+          },
           area: { id: shop.area?._id?.toString(), name: shop.area?.name },
-          market: { id: shop.market?._id?.toString(), name: shop.market?.name, type: shop.market?.type },
+          market: {
+            id: shop.market?._id?.toString(),
+            name: shop.market?.name,
+            type: shop.market?.type,
+          },
           shopNumber: shop.shopNumber,
           shopAddress: shop.shopAddress,
         },
@@ -1125,79 +1298,91 @@ export class SearchService {
     };
   }
 
-  async getSimilarProducts(productId: string, limit: number = 10): Promise<ProductSearchResult[]> {
-    const product = await this.productModel.findById(productId);
-    if (!product) return [];
+  async getSimilarProducts(
+    productId: string,
+    limit: number = 10,
+  ): Promise<ProductSearchResult[]> {
+    try {
+      const product = await this.productModel.findById(productId);
+      if (!product) return [];
 
-    const pipeline: PipelineStage[] = [
-      {
-        $match: {
-          _id: { $ne: product._id },
-          category: product.category,
-          isActive: true,
-          status: ProductStatus.APPROVED,
+      const pipeline: PipelineStage[] = [
+        {
+          $match: {
+            _id: { $ne: product._id },
+            category: product.category,
+            isActive: true,
+            status: ProductStatus.APPROVED,
+          },
         },
-      },
-      {
-        $lookup: {
-          from: 'vendors',
-          localField: 'vendorId',
-          foreignField: '_id',
-          as: 'vendor',
+        {
+          $lookup: {
+            from: 'vendors',
+            localField: 'vendorId',
+            foreignField: '_id',
+            as: 'vendor',
+          },
         },
-      },
-      { $unwind: '$vendor' },
-      {
-        $lookup: {
-          from: 'states',
-          localField: 'stateId',
-          foreignField: '_id',
-          as: 'state',
+        { $unwind: '$vendor' },
+        {
+          $lookup: {
+            from: 'states',
+            localField: 'stateId',
+            foreignField: '_id',
+            as: 'state',
+          },
         },
-      },
-      { $unwind: { path: '$state', preserveNullAndEmptyArrays: true } },
-      {
-        $lookup: {
-          from: 'areas',
-          localField: 'areaId',
-          foreignField: '_id',
-          as: 'area',
+        {
+          $unwind: { path: '$state', preserveNullAndEmptyArrays: true },
         },
-      },
-      { $unwind: { path: '$area', preserveNullAndEmptyArrays: true } },
-      { $sample: { size: limit } },
-      {
-        $project: {
-          id: '$_id',
-          name: 1,
-          description: 1,
-          brand: 1,
-          category: 1,
-          subcategory: 1,
-          images: 1,
-          price: 1,
-          originalPrice: 1,
-          currency: 1,
-          inStock: 1,
-          vendor: {
-            id: '$vendor._id',
-            businessName: '$vendor.businessName',
-            logo: '$vendor.shopImages.logo',
-            rating: '$vendor.rating',
-            isVerified: '$vendor.isVerified',
-            contactDetails: {
-              phone: '$vendor.contactDetails.phone',
-              whatsapp: '$vendor.contactDetails.whatsapp',
+        {
+          $lookup: {
+            from: 'areas',
+            localField: 'areaId',
+            foreignField: '_id',
+            as: 'area',
+          },
+        },
+        {
+          $unwind: { path: '$area', preserveNullAndEmptyArrays: true },
+        },
+        { $sample: { size: limit } },
+        {
+          $project: {
+            id: '$_id',
+            name: 1,
+            description: 1,
+            brand: 1,
+            category: 1,
+            subcategory: 1,
+            images: 1,
+            price: 1,
+            originalPrice: 1,
+            currency: 1,
+            inStock: 1,
+            vendor: {
+              id: '$vendor._id',
+              businessName: '$vendor.businessName',
+              logo: '$vendor.shopImages.logo',
+              rating: '$vendor.rating',
+              isVerified: '$vendor.isVerified',
+              contactDetails: {
+                phone: '$vendor.contactDetails.phone',
+                whatsapp: '$vendor.contactDetails.whatsapp',
+              },
+            },
+            location: {
+              state: { id: '$state._id', name: '$state.name' },
+              area: { id: '$area._id', name: '$area.name' },
             },
           },
-          location: {
-            state: { id: '$state._id', name: '$state.name' },
-            area: { id: '$area._id', name: '$area.name' },
-          },
         },
-      },
-    ];
+      ];
 
-    return this.productModel.aggregate(pipeline);
+      return this.productModel.aggregate(pipeline);
+    } catch (error) {
+      console.error('Similar products error:', error.message);
+      return [];
+    }
   }
 }
