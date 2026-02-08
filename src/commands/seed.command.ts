@@ -1,6 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../app.module';
-import { AdminSeeder } from '../database/seeders/admin.seeder';
+import { MasterSeeder, AdminSeeder, StatesSeeder, AreasSeeder, MarketsSeeder, CategoriesSeeder } from '../database/seeders';
 import { Logger } from '@nestjs/common';
 
 async function bootstrap() {
@@ -10,18 +10,43 @@ async function bootstrap() {
     logger.log('Initializing application...');
     const app = await NestFactory.createApplicationContext(AppModule);
 
+    const masterSeeder = app.get(MasterSeeder);
     const adminSeeder = app.get(AdminSeeder);
+    const statesSeeder = app.get(StatesSeeder);
+    const areasSeeder = app.get(AreasSeeder);
+    const marketsSeeder = app.get(MarketsSeeder);
+    const categoriesSeeder = app.get(CategoriesSeeder);
 
     const args = process.argv.slice(2);
     const command = args[0];
 
     switch (command) {
+      case 'all':
+        await masterSeeder.seedAll();
+        break;
+
+      case 'locations':
+        await masterSeeder.seedLocations();
+        break;
+
       case 'admins':
         await adminSeeder.seed();
         break;
 
-      case 'admins:remove':
-        await adminSeeder.removeSeededAdmins();
+      case 'states':
+        await statesSeeder.seed();
+        break;
+
+      case 'areas':
+        await areasSeeder.seed();
+        break;
+
+      case 'markets':
+        await marketsSeeder.seed();
+        break;
+
+      case 'categories':
+        await categoriesSeeder.seed();
         break;
 
       case 'admins:list':
@@ -38,9 +63,14 @@ async function bootstrap() {
 
       default:
         logger.log('Available commands:');
-        logger.log('  npm run seed admins       - Seed default admin users');
-        logger.log('  npm run seed admins:remove - Remove seeded admins');
-        logger.log('  npm run seed admins:list   - List all admins');
+        logger.log('  npm run seed all        - Seed everything');
+        logger.log('  npm run seed locations  - Seed states, areas, markets');
+        logger.log('  npm run seed admins     - Seed admin users');
+        logger.log('  npm run seed states     - Seed Nigerian states');
+        logger.log('  npm run seed areas      - Seed areas');
+        logger.log('  npm run seed markets    - Seed markets');
+        logger.log('  npm run seed categories - Seed product categories');
+        logger.log('  npm run seed admins:list - List all admins');
         break;
     }
 

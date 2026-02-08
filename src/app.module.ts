@@ -12,6 +12,8 @@ import { CatalogModule } from './catalog/catalog.module';
 import { SearchModule } from './search/search.module';
 import { UploadModule } from './upload/upload.module';
 import { AdminModule } from './admin/admin.module';
+import { FavoritesModule } from './favorites/favorites.module';
+import { ReviewsModule } from './reviews/reviews.module';
 import { DatabaseModule } from './database/database.module';
 
 @Module({
@@ -38,6 +40,8 @@ import { DatabaseModule } from './database/database.module';
     SearchModule,
     UploadModule,
     AdminModule,
+    FavoritesModule,
+    ReviewsModule,
     DatabaseModule,
   ],
 })

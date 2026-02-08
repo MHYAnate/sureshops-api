@@ -19,7 +19,10 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "seed": "ts-node -r tsconfig-paths/register src/commands/seed.command.ts",
-    "seed:admins": "ts-node -r tsconfig-paths/register src/commands/seed.command.ts admins"
+    "seed:all": "npm run seed all",
+    "seed:locations": "npm run seed locations",
+    "seed:admins": "npm run seed admins",
+    "seed:categories": "npm run seed categories"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
