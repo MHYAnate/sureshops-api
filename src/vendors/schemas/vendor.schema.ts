@@ -178,6 +178,9 @@ export class Vendor extends Document {
 
   @Prop({ default: true })
   isOpen: boolean;
+
+  createdAt: Date;
+updatedAt: Date;
 }
 
 export const VendorSchema = SchemaFactory.createForClass(Vendor);

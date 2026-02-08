@@ -36,6 +36,9 @@ export class User extends Document {
 
   @Prop({ type: Types.ObjectId, ref: 'Vendor' })
   vendorProfile?: Types.ObjectId;
+
+  createdAt: Date;
+updatedAt: Date;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
