@@ -1,0 +1,167 @@
+import {
+  IsString,
+  IsOptional,
+  IsArray,
+  IsNumber,
+  IsMongoId,
+  IsEnum,
+  IsObject,
+  ValidateNested,
+  IsEmail,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+import { VendorType } from '../../common/enums/vendor-type.enum';
+
+class BankDetailsDto {
+  @IsString()
+  bankName: string;
+
+  @IsString()
+  accountName: string;
+
+  @IsString()
+  accountNumber: string;
+
+  @IsString()
+  @IsOptional()
+  bankCode?: string;
+}
+
+class ContactDetailsDto {
+  @IsString()
+  phone: string;
+
+  @IsString()
+  @IsOptional()
+  alternatePhone?: string;
+
+  @IsEmail()
+  @IsOptional()
+  email?: string;
+
+  @IsString()
+  @IsOptional()
+  whatsapp?: string;
+
+  @IsString()
+  @IsOptional()
+  instagram?: string;
+
+  @IsString()
+  @IsOptional()
+  facebook?: string;
+
+  @IsString()
+  @IsOptional()
+  twitter?: string;
+
+  @IsString()
+  @IsOptional()
+  website?: string;
+}
+
+class ShopImagesDto {
+  @IsString()
+  @IsOptional()
+  entrancePhoto?: string;
+
+  @IsString()
+  @IsOptional()
+  logo?: string;
+
+  @IsString()
+  @IsOptional()
+  layoutMap?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  additionalImages?: string[];
+}
+
+export class CreateVendorDto {
+  @IsString()
+  businessName: string;
+
+  @IsString()
+  @IsOptional()
+  businessDescription?: string;
+
+  @IsEnum(VendorType)
+  vendorType: VendorType;
+
+  @IsMongoId()
+  stateId: string;
+
+  @IsMongoId()
+  areaId: string;
+
+  @IsMongoId()
+  @IsOptional()
+  marketId?: string;
+
+  @IsString()
+  @IsOptional()
+  shopNumber?: string;
+
+  @IsString()
+  @IsOptional()
+  shopFloor?: string;
+
+  @IsString()
+  @IsOptional()
+  shopBlock?: string;
+
+  @IsString()
+  @IsOptional()
+  shopAddress?: string;
+
+  @IsString()
+  @IsOptional()
+  landmark?: string;
+
+  @IsArray()
+  @IsNumber({}, { each: true })
+  @IsOptional()
+  coordinates?: [number, number];
+
+  @IsObject()
+  @ValidateNested()
+  @Type(() => ShopImagesDto)
+  @IsOptional()
+  shopImages?: ShopImagesDto;
+
+  @IsObject()
+  @ValidateNested()
+  @Type(() => ContactDetailsDto)
+  contactDetails: ContactDetailsDto;
+
+  @IsObject()
+  @ValidateNested()
+  @Type(() => BankDetailsDto)
+  @IsOptional()
+  bankDetails?: BankDetailsDto;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  categories?: string[];
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  tags?: string[];
+
+  @IsString()
+  @IsOptional()
+  openingTime?: string;
+
+  @IsString()
+  @IsOptional()
+  closingTime?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  operatingDays?: string[];
+}
