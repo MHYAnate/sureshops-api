@@ -1,11 +1,12 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { Product } from './schemas/product.schema';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { FilterProductDto } from './dto/filter-product.dto';
 import { VendorsService } from '../vendors/vendors.service';
+import { CatalogService } from '../catalog/catalog.service';
 import { ProductStatus } from '../common/enums/product-status.enum';
 
 @Injectable()
@@ -13,20 +14,49 @@ export class ProductsService {
   constructor(
     @InjectModel(Product.name) private productModel: Model<Product>,
     private vendorsService: VendorsService,
+    private catalogService: CatalogService,
   ) {}
 
   async create(dto: CreateProductDto, userId: string): Promise<Product> {
     // Get vendor by user
     const vendor = await this.vendorsService.findByUser(userId);
-    
-    const product = await this.productModel.create({
+
+    // Try to match with catalog item
+    let catalogItemId: Types.ObjectId | undefined;
+    if (dto.sku) {
+      const catalogItem = await this.catalogService.findBySku(dto.sku);
+      if (catalogItem) catalogItemId = catalogItem._id as Types.ObjectId;
+    } else if (dto.barcode) {
+      const catalogItem = await this.catalogService.findByBarcode(dto.barcode);
+      if (catalogItem) catalogItemId = catalogItem._id as Types.ObjectId;
+    }
+
+    // Create product with denormalized location data
+    const createData: Record<string, any> = {
       ...dto,
       vendorId: vendor._id,
+      stateId: vendor.stateId,
+      areaId: vendor.areaId,
+      marketId: vendor.marketId,
+      location: vendor.location,
       status: ProductStatus.PENDING,
-    });
+    };
 
-    // Increment vendor product count
+    // Only add catalogItemId if it exists
+    if (catalogItemId) {
+      createData.catalogItemId = catalogItemId;
+    }
+
+    const product = await this.productModel.create(createData);
+
+    // Increment vendor product count and update price range
     await this.vendorsService.incrementProductCount(vendor._id.toString());
+    await this.updateVendorPriceRange(vendor._id.toString());
+
+    // Update catalog price stats if linked
+    if (catalogItemId) {
+      await this.updateCatalogPriceStats(catalogItemId.toString());
+    }
 
     return product;
   }
@@ -48,10 +78,15 @@ export class ProductsService {
       search,
       minPrice,
       maxPrice,
+      stateId,
+      areaId,
+      marketId,
+      inStock,
       sortBy = 'createdAt',
       sortOrder = 'desc',
     } = filterDto;
 
+    // Use Record<string, any> instead of FilterQuery
     const query: Record<string, any> = { isActive: true };
 
     if (vendorId) query.vendorId = vendorId;
@@ -59,12 +94,17 @@ export class ProductsService {
     if (subcategory) query.subcategory = subcategory;
     if (type) query.type = type;
     if (status) query.status = status;
-    else query.status = ProductStatus.APPROVED; // Default to approved
+    else query.status = ProductStatus.APPROVED;
+    if (stateId) query.stateId = stateId;
+    if (areaId) query.areaId = areaId;
+    if (marketId) query.marketId = marketId;
+    if (inStock !== undefined) query.inStock = inStock;
 
     if (search) {
       query.$or = [
         { name: { $regex: search, $options: 'i' } },
         { description: { $regex: search, $options: 'i' } },
+        { brand: { $regex: search, $options: 'i' } },
         { tags: { $in: [new RegExp(search, 'i')] } },
       ];
     }
@@ -76,7 +116,7 @@ export class ProductsService {
     }
 
     const skip = (page - 1) * limit;
-    const sortOptions: any = {};
+    const sortOptions: Record<string, 1 | -1> = {};
     sortOptions[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
     const [products, total] = await Promise.all([
@@ -84,11 +124,11 @@ export class ProductsService {
         .find(query)
         .populate({
           path: 'vendorId',
-          select: 'businessName shopImages contactDetails stateId areaId marketId',
+          select: 'businessName shopImages contactDetails bankDetails stateId areaId marketId shopNumber rating isVerified',
           populate: [
             { path: 'stateId', select: 'name' },
             { path: 'areaId', select: 'name' },
-            { path: 'marketId', select: 'name' },
+            { path: 'marketId', select: 'name type' },
           ],
         })
         .skip(skip)
@@ -110,11 +150,11 @@ export class ProductsService {
       .findById(id)
       .populate({
         path: 'vendorId',
-        select: 'businessName businessDescription shopImages contactDetails bankDetails stateId areaId marketId',
+        select: 'businessName businessDescription shopImages contactDetails bankDetails stateId areaId marketId shopNumber shopFloor shopBlock shopAddress landmark rating isVerified operatingHours isOpen',
         populate: [
           { path: 'stateId', select: 'name code' },
           { path: 'areaId', select: 'name' },
-          { path: 'marketId', select: 'name type address' },
+          { path: 'marketId', select: 'name type address entrancePhoto layoutMap' },
         ],
       });
 
@@ -141,6 +181,37 @@ export class ProductsService {
       .sort({ createdAt: -1 });
   }
 
+  async findNearby(
+    longitude: number,
+    latitude: number,
+    maxDistanceKm: number = 5,
+    category?: string,
+  ): Promise<Product[]> {
+    const query: Record<string, any> = {
+      location: {
+        $near: {
+          $geometry: {
+            type: 'Point',
+            coordinates: [longitude, latitude],
+          },
+          $maxDistance: maxDistanceKm * 1000,
+        },
+      },
+      isActive: true,
+      status: ProductStatus.APPROVED,
+    };
+
+    if (category) query.category = category;
+
+    return this.productModel
+      .find(query)
+      .populate({
+        path: 'vendorId',
+        select: 'businessName shopImages contactDetails rating isVerified shopNumber',
+      })
+      .limit(50);
+  }
+
   async update(id: string, dto: UpdateProductDto, userId: string): Promise<Product> {
     const product = await this.productModel.findById(id);
     if (!product) {
@@ -160,7 +231,17 @@ export class ProductsService {
     );
 
     if (!updatedProduct) {
-      throw new NotFoundException('Product not found after update');
+      throw new NotFoundException('Product not found');
+    }
+
+    // Update vendor price range if price changed
+    if (dto.price !== undefined) {
+      await this.updateVendorPriceRange(vendor._id.toString());
+    }
+
+    // Update catalog price stats if linked
+    if (product.catalogItemId) {
+      await this.updateCatalogPriceStats(product.catalogItemId.toString());
     }
 
     return updatedProduct;
@@ -196,5 +277,51 @@ export class ProductsService {
 
     // Decrement vendor product count
     await this.vendorsService.decrementProductCount(vendor._id.toString());
+    await this.updateVendorPriceRange(vendor._id.toString());
+
+    // Update catalog price stats if linked
+    if (product.catalogItemId) {
+      await this.updateCatalogPriceStats(product.catalogItemId.toString());
+    }
+  }
+
+  private async updateVendorPriceRange(vendorId: string): Promise<void> {
+    const priceStats = await this.productModel.aggregate([
+      {
+        $match: {
+          vendorId: new Types.ObjectId(vendorId),
+          isActive: true,
+          status: ProductStatus.APPROVED,
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          minPrice: { $min: '$price' },
+          maxPrice: { $max: '$price' },
+        },
+      },
+    ]);
+
+    if (priceStats.length > 0) {
+      await this.vendorsService.updatePriceRange(
+        vendorId,
+        priceStats[0].minPrice,
+        priceStats[0].maxPrice,
+      );
+    }
+  }
+
+  private async updateCatalogPriceStats(catalogItemId: string): Promise<void> {
+    const prices = await this.productModel
+      .find({
+        catalogItemId: new Types.ObjectId(catalogItemId),
+        isActive: true,
+        status: ProductStatus.APPROVED,
+      })
+      .select('price');
+
+    const priceValues = prices.map((p) => p.price);
+    await this.catalogService.updatePriceStats(catalogItemId, priceValues);
   }
 }

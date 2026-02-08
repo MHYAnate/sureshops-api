@@ -257,4 +257,10 @@ export class VendorsService {
 
     await this.vendorModel.deleteOne({ _id: id });
   }
+  async updatePriceRange(vendorId: string, minPrice: number, maxPrice: number): Promise<void> {
+    await this.vendorModel.findByIdAndUpdate(vendorId, {
+      minProductPrice: minPrice || 0,
+      maxProductPrice: maxPrice || 0,
+    });
+  }
 }

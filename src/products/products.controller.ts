@@ -40,6 +40,16 @@ export class ProductsController {
     return this.productsService.findByVendor(vendorId);
   }
 
+  @Get('nearby')
+  findNearby(
+    @Query('longitude') longitude: number,
+    @Query('latitude') latitude: number,
+    @Query('distance') distance?: number,
+    @Query('category') category?: string,
+  ) {
+    return this.productsService.findNearby(longitude, latitude, distance, category);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.productsService.findById(id);

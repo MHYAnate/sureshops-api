@@ -8,6 +8,8 @@ import { AreasModule } from './areas/areas.module';
 import { MarketsModule } from './markets/markets.module';
 import { VendorsModule } from './vendors/vendors.module';
 import { ProductsModule } from './products/products.module';
+import { CatalogModule } from './catalog/catalog.module';
+import { SearchModule } from './search/search.module';
 import { UploadModule } from './upload/upload.module';
 
 @Module({
@@ -30,6 +32,8 @@ import { UploadModule } from './upload/upload.module';
     MarketsModule,
     VendorsModule,
     ProductsModule,
+    CatalogModule,
+    SearchModule,
     UploadModule,
   ],
 })

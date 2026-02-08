@@ -5,6 +5,7 @@ import {
   IsArray,
   IsEnum,
   IsObject,
+  IsBoolean,
   Min,
 } from 'class-validator';
 import { ProductType } from '../../common/enums/product-status.enum';
@@ -16,6 +17,18 @@ export class CreateProductDto {
   @IsString()
   @IsOptional()
   description?: string;
+
+  @IsString()
+  @IsOptional()
+  sku?: string;
+
+  @IsString()
+  @IsOptional()
+  barcode?: string;
+
+  @IsString()
+  @IsOptional()
+  brand?: string;
 
   @IsEnum(ProductType)
   @IsOptional()
@@ -35,8 +48,7 @@ export class CreateProductDto {
   images?: string[];
 
   @IsString()
-  @IsOptional()
-  category?: string;
+  category: string;
 
   @IsString()
   @IsOptional()
@@ -49,7 +61,7 @@ export class CreateProductDto {
 
   @IsNumber()
   @IsOptional()
-  quantity?: number;
+  quantity?: number = 0;
 
   @IsString()
   @IsOptional()
@@ -58,4 +70,8 @@ export class CreateProductDto {
   @IsObject()
   @IsOptional()
   specifications?: Record<string, any>;
+
+  @IsBoolean()
+  @IsOptional()
+  inStock?: boolean = true;
 }

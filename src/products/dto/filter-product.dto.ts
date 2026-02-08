@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsEnum, IsNumber, IsMongoId } from 'class-validator';
+import { IsOptional, IsString, IsEnum, IsNumber, IsMongoId, IsBoolean } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ProductStatus, ProductType } from '../../common/enums/product-status.enum';
 
@@ -14,6 +14,10 @@ export class FilterProductDto {
   @IsOptional()
   @IsString()
   subcategory?: string;
+
+  @IsOptional()
+  @IsString()
+  brand?: string;
 
   @IsOptional()
   @IsEnum(ProductType)
@@ -36,6 +40,24 @@ export class FilterProductDto {
   @Type(() => Number)
   @IsNumber()
   maxPrice?: number;
+
+  // Location filters
+  @IsOptional()
+  @IsMongoId()
+  stateId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  areaId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  marketId?: string;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  inStock?: boolean;
 
   @IsOptional()
   @Type(() => Number)
