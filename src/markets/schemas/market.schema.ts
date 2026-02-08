@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document, Types } from 'mongoose';
+import { Document, Types, Schema as MongooseSchema } from 'mongoose';
 import { MarketType } from '../../common/enums/market-type.enum';
 
 @Schema({ timestamps: true })
@@ -25,17 +25,8 @@ export class Market extends Document {
   @Prop()
   landmark?: string;
 
-  // ✅ FIX: Remove default: 'Point', use raw schema definition,
-  //         and set the entire field's default to undefined
-  @Prop({
-    type: {
-      type: { type: String, enum: ['Point'] },   // ← NO default
-      coordinates: { type: [Number] },
-    },
-    required: false,
-    default: undefined,                            // ← entire field stays absent
-    _id: false,                                    // ← no sub-document _id
-  })
+  // ✅ FIX: Simple type declaration — schema defined below
+  @Prop({ type: Object })
   location?: {
     type: 'Point';
     coordinates: [number, number];
@@ -77,7 +68,27 @@ export class Market extends Document {
 
 export const MarketSchema = SchemaFactory.createForClass(Market);
 
-// ✅ FIX: sparse index — skips documents where location is absent
+// ✅ FIX: Define the location path AFTER schema creation
+//         This gives us full control over the sub-schema
+MarketSchema.path('location', new MongooseSchema(
+  {
+    type: {
+      type: String,
+      enum: ['Point'],
+      required: true,
+    },
+    coordinates: {
+      type: [Number],
+      required: true,
+    },
+  },
+  { _id: false }
+));
+
+// ✅ Make location not required at the document level
+MarketSchema.path('location').required(false);
+
+// ✅ sparse: true — skips documents where location is absent
 MarketSchema.index({ location: '2dsphere' }, { sparse: true });
 MarketSchema.index({ stateId: 1, areaId: 1 });
 MarketSchema.index({ type: 1 });
