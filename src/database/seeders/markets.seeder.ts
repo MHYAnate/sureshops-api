@@ -6,15 +6,15 @@ import { Area } from '../../areas/schemas/area.schema';
 import { State } from '../../states/schemas/state.schema';
 import { MarketType } from '../../common/enums/market-type.enum';
 
-// ✅ Add this interface
 interface MarketSeedData {
   name: string;
   type: MarketType;
   address: string;
-  landmark?: string;          // optional
+  landmark?: string;
   openingTime: string;
   closingTime: string;
-  operatingDays?: string[];   // optional
+  operatingDays?: string[];
+  coordinates?: [number, number];  // ✅ Optional real coordinates
 }
 
 interface LocationSeedData {
@@ -33,7 +33,6 @@ export class MarketsSeeder {
     @InjectModel(State.name) private stateModel: Model<State>,
   ) {}
 
-  // ✅ Explicitly type the return value
   private getMarketsData(): LocationSeedData[] {
     return [
       // Lagos Markets
@@ -49,6 +48,7 @@ export class MarketsSeeder {
             openingTime: '08:00',
             closingTime: '18:00',
             operatingDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+            coordinates: [3.3470, 6.6018],    // ✅ [longitude, latitude]
           },
           {
             name: 'Ikeja City Mall',
@@ -58,6 +58,7 @@ export class MarketsSeeder {
             openingTime: '09:00',
             closingTime: '21:00',
             operatingDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+            coordinates: [3.3515, 6.6105],
           },
         ],
       },
@@ -73,6 +74,7 @@ export class MarketsSeeder {
             openingTime: '09:00',
             closingTime: '21:00',
             operatingDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+            coordinates: [3.4653, 6.4381],
           },
           {
             name: 'Circle Mall Lekki',
@@ -80,7 +82,7 @@ export class MarketsSeeder {
             address: 'Lekki, Lagos',
             openingTime: '09:00',
             closingTime: '21:00',
-            // landmark and operatingDays omitted — now fine because they're optional
+            coordinates: [3.5400, 6.4437],
           },
         ],
       },
@@ -94,6 +96,7 @@ export class MarketsSeeder {
             address: 'Victoria Island, Lagos',
             openingTime: '08:00',
             closingTime: '20:00',
+            coordinates: [3.4226, 6.4281],
           },
         ],
       },
@@ -109,6 +112,7 @@ export class MarketsSeeder {
             openingTime: '06:00',
             closingTime: '19:00',
             operatingDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+            coordinates: [3.3903, 6.4530],
           },
           {
             name: 'Idumota Market',
@@ -116,6 +120,7 @@ export class MarketsSeeder {
             address: 'Lagos Island',
             openingTime: '06:00',
             closingTime: '19:00',
+            coordinates: [3.3925, 6.4560],
           },
         ],
       },
@@ -129,6 +134,7 @@ export class MarketsSeeder {
             address: 'Yaba, Lagos',
             openingTime: '07:00',
             closingTime: '18:00',
+            coordinates: [3.3750, 6.5090],
           },
           {
             name: 'Tejuosho Market',
@@ -136,6 +142,7 @@ export class MarketsSeeder {
             address: 'Yaba, Lagos',
             openingTime: '07:00',
             closingTime: '18:00',
+            coordinates: [3.3725, 6.5115],
           },
         ],
       },
@@ -150,6 +157,7 @@ export class MarketsSeeder {
             address: 'Wuse Zone 5, Abuja',
             openingTime: '07:00',
             closingTime: '18:00',
+            coordinates: [7.4760, 9.0700],
           },
           {
             name: 'Ceddi Plaza',
@@ -157,6 +165,7 @@ export class MarketsSeeder {
             address: 'Wuse Zone 4, Abuja',
             openingTime: '09:00',
             closingTime: '20:00',
+            coordinates: [7.4800, 9.0650],
           },
         ],
       },
@@ -170,6 +179,7 @@ export class MarketsSeeder {
             address: 'Area 10, Garki, Abuja',
             openingTime: '07:00',
             closingTime: '18:00',
+            coordinates: [7.4905, 9.0430],
           },
         ],
       },
@@ -184,6 +194,7 @@ export class MarketsSeeder {
             openingTime: '09:00',
             closingTime: '21:00',
             operatingDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+            coordinates: [7.4150, 9.0720],
           },
         ],
       },
@@ -198,6 +209,7 @@ export class MarketsSeeder {
             address: 'Mile 1, Port Harcourt',
             openingTime: '07:00',
             closingTime: '18:00',
+            coordinates: [7.0134, 4.7753],
           },
           {
             name: 'Mile 3 Market',
@@ -205,6 +217,7 @@ export class MarketsSeeder {
             address: 'Mile 3, Port Harcourt',
             openingTime: '07:00',
             closingTime: '18:00',
+            coordinates: [7.0200, 4.7850],
           },
           {
             name: 'Port Harcourt Mall',
@@ -212,6 +225,7 @@ export class MarketsSeeder {
             address: 'Azikiwe Road, Port Harcourt',
             openingTime: '09:00',
             closingTime: '21:00',
+            coordinates: [7.0074, 4.7731],
           },
         ],
       },
@@ -226,6 +240,7 @@ export class MarketsSeeder {
             address: 'Kano City',
             openingTime: '07:00',
             closingTime: '18:00',
+            coordinates: [8.5167, 12.0000],
           },
           {
             name: 'Singer Market',
@@ -233,6 +248,7 @@ export class MarketsSeeder {
             address: 'Kano City',
             openingTime: '07:00',
             closingTime: '18:00',
+            coordinates: [8.5200, 11.9960],
           },
         ],
       },
@@ -246,6 +262,7 @@ export class MarketsSeeder {
             address: 'Sabon Gari, Kano',
             openingTime: '07:00',
             closingTime: '18:00',
+            coordinates: [8.5230, 11.9820],
           },
         ],
       },
@@ -260,6 +277,7 @@ export class MarketsSeeder {
             address: 'Bodija, Ibadan',
             openingTime: '06:00',
             closingTime: '18:00',
+            coordinates: [3.9100, 7.4167],
           },
           {
             name: 'Palms Mall Ibadan',
@@ -267,6 +285,7 @@ export class MarketsSeeder {
             address: 'Ring Road, Ibadan',
             openingTime: '09:00',
             closingTime: '21:00',
+            coordinates: [3.8950, 7.3800],
           },
         ],
       },
@@ -280,6 +299,7 @@ export class MarketsSeeder {
             address: 'Dugbe, Ibadan',
             openingTime: '06:00',
             closingTime: '18:00',
+            coordinates: [3.8780, 7.3880],
           },
         ],
       },
@@ -308,20 +328,31 @@ export class MarketsSeeder {
         });
 
         if (!exists) {
-          const market = await this.marketModel.create({
+          // ✅ Build document — only include location when coordinates exist
+          const marketDoc: Record<string, any> = {
             name: marketData.name,
             type: marketData.type,
             stateId: state._id,
             areaId: area._id,
             address: marketData.address,
-            landmark: marketData.landmark,           // ✅ No more error
+            landmark: marketData.landmark,
             openingTime: marketData.openingTime,
             closingTime: marketData.closingTime,
             operatingDays: marketData.operatingDays || [
               'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
             ],
             isActive: true,
-          });
+          };
+
+          // ✅ Only set location when we have real coordinates
+          if (marketData.coordinates) {
+            marketDoc.location = {
+              type: 'Point',
+              coordinates: marketData.coordinates,
+            };
+          }
+
+          const market = await this.marketModel.create(marketDoc);
           createdMarkets.push(market);
           this.logger.log(`Created market: ${marketData.name}`);
         }

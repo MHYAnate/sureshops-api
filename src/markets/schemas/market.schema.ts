@@ -25,7 +25,17 @@ export class Market extends Document {
   @Prop()
   landmark?: string;
 
-  @Prop({ type: { type: String, enum: ['Point'], default: 'Point' }, coordinates: [Number] })
+  // ✅ FIX: Remove default: 'Point', use raw schema definition,
+  //         and set the entire field's default to undefined
+  @Prop({
+    type: {
+      type: { type: String, enum: ['Point'] },   // ← NO default
+      coordinates: { type: [Number] },
+    },
+    required: false,
+    default: undefined,                            // ← entire field stays absent
+    _id: false,                                    // ← no sub-document _id
+  })
   location?: {
     type: 'Point';
     coordinates: [number, number];
@@ -37,7 +47,7 @@ export class Market extends Document {
   @Prop()
   layoutMap?: string;
 
-  @Prop([String])
+  @Prop({ type: [String], default: [] })
   additionalPhotos?: string[];
 
   @Prop()
@@ -46,7 +56,7 @@ export class Market extends Document {
   @Prop()
   closingTime?: string;
 
-  @Prop([String])
+  @Prop({ type: [String] })
   operatingDays?: string[];
 
   @Prop()
@@ -67,7 +77,8 @@ export class Market extends Document {
 
 export const MarketSchema = SchemaFactory.createForClass(Market);
 
-MarketSchema.index({ location: '2dsphere' });
+// ✅ FIX: sparse index — skips documents where location is absent
+MarketSchema.index({ location: '2dsphere' }, { sparse: true });
 MarketSchema.index({ stateId: 1, areaId: 1 });
 MarketSchema.index({ type: 1 });
 MarketSchema.index({ name: 'text', address: 'text' });
