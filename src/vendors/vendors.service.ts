@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { Vendor } from './schemas/vendor.schema';
 import { CreateVendorDto } from './dto/create-vendor.dto';
 import { UpdateVendorDto } from './dto/update-vendor.dto';
@@ -19,7 +19,7 @@ export class VendorsService {
 
   async create(dto: CreateVendorDto, userId: string): Promise<Vendor> {
     const vendorData: any = { ...dto, userId };
-    
+
     if (dto.coordinates) {
       vendorData.location = {
         type: 'Point',
@@ -30,11 +30,9 @@ export class VendorsService {
 
     const vendor = await this.vendorModel.create(vendorData);
 
-    // Update user role to vendor
     await this.usersService.update(userId, { role: Role.VENDOR });
     await this.usersService.updateVendorProfile(userId, vendor._id.toString());
 
-    // Increment market shop count if applicable
     if (dto.marketId) {
       await this.marketsService.incrementShopCount(dto.marketId);
     }
@@ -66,9 +64,10 @@ export class VendorsService {
 
     const query: Record<string, any> = { isActive: true };
 
-    if (stateId) query.stateId = stateId;
-    if (areaId) query.areaId = areaId;
-    if (marketId) query.marketId = marketId;
+    // ✅ Convert string IDs to ObjectId
+    if (stateId) query.stateId = new Types.ObjectId(stateId);
+    if (areaId) query.areaId = new Types.ObjectId(areaId);
+    if (marketId) query.marketId = new Types.ObjectId(marketId);
     if (vendorType) query.vendorType = vendorType;
     if (category) query.categories = { $in: [category] };
     if (isVerified !== undefined) query.isVerified = isVerified;
@@ -82,7 +81,6 @@ export class VendorsService {
       ];
     }
 
-    // Geospatial query
     if (longitude && latitude) {
       query.location = {
         $near: {
@@ -124,12 +122,11 @@ export class VendorsService {
       .populate('areaId', 'name localGovernment')
       .populate('marketId', 'name type address entrancePhoto layoutMap')
       .populate('userId', 'firstName lastName email phone');
-    
+
     if (!vendor) {
       throw new NotFoundException('Vendor not found');
     }
 
-    // Increment view count
     await this.vendorModel.findByIdAndUpdate(id, { $inc: { totalViews: 1 } });
 
     return vendor;
@@ -141,7 +138,7 @@ export class VendorsService {
       .populate('stateId', 'name code')
       .populate('areaId', 'name')
       .populate('marketId', 'name type');
-    
+
     if (!vendor) {
       throw new NotFoundException('Vendor profile not found');
     }
@@ -149,8 +146,9 @@ export class VendorsService {
   }
 
   async findByMarket(marketId: string): Promise<Vendor[]> {
+    // ✅ Convert string to ObjectId
     return this.vendorModel
-      .find({ marketId, isActive: true })
+      .find({ marketId: new Types.ObjectId(marketId), isActive: true })
       .populate('userId', 'firstName lastName')
       .sort({ shopNumber: 1 });
   }
@@ -183,7 +181,6 @@ export class VendorsService {
       throw new NotFoundException('Vendor not found');
     }
 
-    // Check ownership
     if (vendor.userId.toString() !== userId) {
       throw new ForbiddenException('You can only update your own vendor profile');
     }
@@ -250,13 +247,13 @@ export class VendorsService {
       throw new ForbiddenException('You can only delete your own vendor profile');
     }
 
-    // Decrement market shop count if applicable
     if (vendor.marketId) {
       await this.marketsService.decrementShopCount(vendor.marketId.toString());
     }
 
     await this.vendorModel.deleteOne({ _id: id });
   }
+
   async updatePriceRange(vendorId: string, minPrice: number, maxPrice: number): Promise<void> {
     await this.vendorModel.findByIdAndUpdate(vendorId, {
       minProductPrice: minPrice || 0,

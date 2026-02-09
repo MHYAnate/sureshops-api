@@ -18,10 +18,8 @@ export class ProductsService {
   ) {}
 
   async create(dto: CreateProductDto, userId: string): Promise<Product> {
-    // Get vendor by user
     const vendor = await this.vendorsService.findByUser(userId);
 
-    // Try to match with catalog item
     let catalogItemId: Types.ObjectId | undefined;
     if (dto.sku) {
       const catalogItem = await this.catalogService.findBySku(dto.sku);
@@ -31,7 +29,6 @@ export class ProductsService {
       if (catalogItem) catalogItemId = catalogItem._id as Types.ObjectId;
     }
 
-    // Create product with denormalized location data
     const createData: Record<string, any> = {
       ...dto,
       vendorId: vendor._id,
@@ -42,18 +39,15 @@ export class ProductsService {
       status: ProductStatus.PENDING,
     };
 
-    // Only add catalogItemId if it exists
     if (catalogItemId) {
       createData.catalogItemId = catalogItemId;
     }
 
     const product = await this.productModel.create(createData);
 
-    // Increment vendor product count and update price range
     await this.vendorsService.incrementProductCount(vendor._id.toString());
     await this.updateVendorPriceRange(vendor._id.toString());
 
-    // Update catalog price stats if linked
     if (catalogItemId) {
       await this.updateCatalogPriceStats(catalogItemId.toString());
     }
@@ -86,18 +80,18 @@ export class ProductsService {
       sortOrder = 'desc',
     } = filterDto;
 
-    // Use Record<string, any> instead of FilterQuery
     const query: Record<string, any> = { isActive: true };
 
-    if (vendorId) query.vendorId = vendorId;
+    // ✅ Convert all ref IDs to ObjectId
+    if (vendorId) query.vendorId = new Types.ObjectId(vendorId);
+    if (stateId) query.stateId = new Types.ObjectId(stateId);
+    if (areaId) query.areaId = new Types.ObjectId(areaId);
+    if (marketId) query.marketId = new Types.ObjectId(marketId);
     if (category) query.category = category;
     if (subcategory) query.subcategory = subcategory;
     if (type) query.type = type;
     if (status) query.status = status;
     else query.status = ProductStatus.APPROVED;
-    if (stateId) query.stateId = stateId;
-    if (areaId) query.areaId = areaId;
-    if (marketId) query.marketId = marketId;
     if (inStock !== undefined) query.inStock = inStock;
 
     if (search) {
@@ -162,15 +156,15 @@ export class ProductsService {
       throw new NotFoundException('Product not found');
     }
 
-    // Increment view count
     await this.productModel.findByIdAndUpdate(id, { $inc: { views: 1 } });
 
     return product;
   }
 
   async findByVendor(vendorId: string): Promise<Product[]> {
+    // ✅ Convert string to ObjectId
     return this.productModel
-      .find({ vendorId, isActive: true })
+      .find({ vendorId: new Types.ObjectId(vendorId), isActive: true })
       .sort({ createdAt: -1 });
   }
 
@@ -218,7 +212,6 @@ export class ProductsService {
       throw new NotFoundException('Product not found');
     }
 
-    // Verify ownership
     const vendor = await this.vendorsService.findByUser(userId);
     if (product.vendorId.toString() !== vendor._id.toString()) {
       throw new ForbiddenException('You can only update your own products');
@@ -234,12 +227,10 @@ export class ProductsService {
       throw new NotFoundException('Product not found');
     }
 
-    // Update vendor price range if price changed
     if (dto.price !== undefined) {
       await this.updateVendorPriceRange(vendor._id.toString());
     }
 
-    // Update catalog price stats if linked
     if (product.catalogItemId) {
       await this.updateCatalogPriceStats(product.catalogItemId.toString());
     }
@@ -267,7 +258,6 @@ export class ProductsService {
       throw new NotFoundException('Product not found');
     }
 
-    // Verify ownership
     const vendor = await this.vendorsService.findByUser(userId);
     if (product.vendorId.toString() !== vendor._id.toString()) {
       throw new ForbiddenException('You can only delete your own products');
@@ -275,11 +265,9 @@ export class ProductsService {
 
     await this.productModel.deleteOne({ _id: id });
 
-    // Decrement vendor product count
     await this.vendorsService.decrementProductCount(vendor._id.toString());
     await this.updateVendorPriceRange(vendor._id.toString());
 
-    // Update catalog price stats if linked
     if (product.catalogItemId) {
       await this.updateCatalogPriceStats(product.catalogItemId.toString());
     }

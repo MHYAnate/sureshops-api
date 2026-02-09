@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { Market } from './schemas/market.schema';
 import { CreateMarketDto } from './dto/create-market.dto';
 import { UpdateMarketDto } from './dto/update-market.dto';
@@ -30,11 +30,11 @@ export class MarketsService {
   }> {
     const { page = 1, limit = 20, stateId, areaId, type, search, longitude, latitude, maxDistance } = filterDto;
 
-    // Create a query object with proper typing
     const query: Record<string, any> = { isActive: true };
 
-    if (stateId) query.stateId = stateId;
-    if (areaId) query.areaId = areaId;
+    // ✅ Convert string IDs to ObjectId
+    if (stateId) query.stateId = new Types.ObjectId(stateId);
+    if (areaId) query.areaId = new Types.ObjectId(areaId);
     if (type) query.type = type;
 
     if (search) {
@@ -44,7 +44,6 @@ export class MarketsService {
       ];
     }
 
-    // Geospatial query
     if (longitude && latitude) {
       query.location = {
         $near: {
@@ -89,8 +88,9 @@ export class MarketsService {
   }
 
   async findByArea(areaId: string): Promise<Market[]> {
+    // ✅ Convert string to ObjectId
     return this.marketModel
-      .find({ areaId, isActive: true })
+      .find({ areaId: new Types.ObjectId(areaId), isActive: true })
       .populate('stateId', 'name code')
       .populate('areaId', 'name')
       .sort({ name: 1 });

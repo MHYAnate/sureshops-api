@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { Area } from './schemas/area.schema';
 import { CreateAreaDto } from './dto/create-area.dto';
 import { UpdateAreaDto } from './dto/update-area.dto';
@@ -29,8 +29,11 @@ export class AreasService {
   }
 
   async findByState(stateId: string): Promise<Area[]> {
+    // ✅ Convert string to ObjectId — MongoDB stores stateId as ObjectId
+    const objectId = new Types.ObjectId(stateId);
+
     return this.areaModel
-      .find({ stateId, isActive: true })
+      .find({ stateId: objectId, isActive: true })
       .populate('stateId', 'name code')
       .sort({ name: 1 });
   }
