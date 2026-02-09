@@ -6,6 +6,7 @@ import {
   IsMongoId,
   IsEnum,
   IsObject,
+  IsBoolean,
   ValidateNested,
   IsEmail,
 } from 'class-validator';
@@ -14,13 +15,16 @@ import { VendorType } from '../../common/enums/vendor-type.enum';
 
 class BankDetailsDto {
   @IsString()
-  bankName: string;
+  @IsOptional()
+  bankName?: string;
 
   @IsString()
-  accountName: string;
+  @IsOptional()
+  accountName?: string;
 
   @IsString()
-  accountNumber: string;
+  @IsOptional()
+  accountNumber?: string;
 
   @IsString()
   @IsOptional()
@@ -77,6 +81,25 @@ class ShopImagesDto {
   @IsString({ each: true })
   @IsOptional()
   additionalImages?: string[];
+}
+
+class OperatingHoursDto {
+  @IsString()
+  @IsOptional()
+  openingTime?: string;
+
+  @IsString()
+  @IsOptional()
+  closingTime?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  operatingDays?: string[];
+
+  @IsBoolean()
+  @IsOptional()
+  is24Hours?: boolean;
 }
 
 export class CreateVendorDto {
@@ -142,6 +165,12 @@ export class CreateVendorDto {
   @IsOptional()
   bankDetails?: BankDetailsDto;
 
+  @IsObject()
+  @ValidateNested()
+  @Type(() => OperatingHoursDto)
+  @IsOptional()
+  operatingHours?: OperatingHoursDto;
+
   @IsArray()
   @IsString({ each: true })
   @IsOptional()
@@ -151,17 +180,4 @@ export class CreateVendorDto {
   @IsString({ each: true })
   @IsOptional()
   tags?: string[];
-
-  @IsString()
-  @IsOptional()
-  openingTime?: string;
-
-  @IsString()
-  @IsOptional()
-  closingTime?: string;
-
-  @IsArray()
-  @IsString({ each: true })
-  @IsOptional()
-  operatingDays?: string[];
 }

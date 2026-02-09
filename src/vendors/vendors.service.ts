@@ -20,6 +20,7 @@ export class VendorsService {
   async create(dto: CreateVendorDto, userId: string): Promise<Vendor> {
     const vendorData: any = { ...dto, userId };
 
+    // Handle coordinates → GeoJSON location
     if (dto.coordinates) {
       vendorData.location = {
         type: 'Point',
@@ -28,11 +29,16 @@ export class VendorsService {
     }
     delete vendorData.coordinates;
 
+    // operatingHours is already nested from the DTO — no transformation needed
+    // It goes directly into the schema as-is
+
     const vendor = await this.vendorModel.create(vendorData);
 
+    // Update user role to vendor
     await this.usersService.update(userId, { role: Role.VENDOR });
     await this.usersService.updateVendorProfile(userId, vendor._id.toString());
 
+    // Increment market shop count if applicable
     if (dto.marketId) {
       await this.marketsService.incrementShopCount(dto.marketId);
     }
@@ -64,7 +70,6 @@ export class VendorsService {
 
     const query: Record<string, any> = { isActive: true };
 
-    // ✅ Convert string IDs to ObjectId
     if (stateId) query.stateId = new Types.ObjectId(stateId);
     if (areaId) query.areaId = new Types.ObjectId(areaId);
     if (marketId) query.marketId = new Types.ObjectId(marketId);
@@ -146,7 +151,6 @@ export class VendorsService {
   }
 
   async findByMarket(marketId: string): Promise<Vendor[]> {
-    // ✅ Convert string to ObjectId
     return this.vendorModel
       .find({ marketId: new Types.ObjectId(marketId), isActive: true })
       .populate('userId', 'firstName lastName')

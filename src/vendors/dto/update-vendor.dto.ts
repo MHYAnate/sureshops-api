@@ -6,9 +6,9 @@ import {
   IsMongoId,
   IsEnum,
   IsObject,
+  IsBoolean,
   ValidateNested,
   IsEmail,
-  IsBoolean,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { VendorType } from '../../common/enums/vendor-type.enum';
@@ -84,6 +84,25 @@ class ShopImagesDto {
   additionalImages?: string[];
 }
 
+class OperatingHoursDto {
+  @IsString()
+  @IsOptional()
+  openingTime?: string;
+
+  @IsString()
+  @IsOptional()
+  closingTime?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  operatingDays?: string[];
+
+  @IsBoolean()
+  @IsOptional()
+  is24Hours?: boolean;
+}
+
 export class UpdateVendorDto {
   @IsString()
   @IsOptional()
@@ -152,6 +171,12 @@ export class UpdateVendorDto {
   @IsOptional()
   bankDetails?: BankDetailsDto;
 
+  @IsObject()
+  @ValidateNested()
+  @Type(() => OperatingHoursDto)
+  @IsOptional()
+  operatingHours?: OperatingHoursDto;
+
   @IsArray()
   @IsString({ each: true })
   @IsOptional()
@@ -161,19 +186,6 @@ export class UpdateVendorDto {
   @IsString({ each: true })
   @IsOptional()
   tags?: string[];
-
-  @IsString()
-  @IsOptional()
-  openingTime?: string;
-
-  @IsString()
-  @IsOptional()
-  closingTime?: string;
-
-  @IsArray()
-  @IsString({ each: true })
-  @IsOptional()
-  operatingDays?: string[];
 
   @IsBoolean()
   @IsOptional()
