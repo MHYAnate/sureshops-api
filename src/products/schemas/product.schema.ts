@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document, Types } from 'mongoose';
+import { Document, Types, Schema as MongooseSchema } from 'mongoose';
 import { ProductStatus, ProductType } from '../../common/enums/product-status.enum';
 
 @Schema({ timestamps: true })
@@ -7,7 +7,6 @@ export class Product extends Document {
   @Prop({ type: Types.ObjectId, ref: 'Vendor', required: true })
   vendorId: Types.ObjectId;
 
-  // Link to master catalog (optional - for price comparison)
   @Prop({ type: Types.ObjectId, ref: 'CatalogItem' })
   catalogItemId?: Types.ObjectId;
 
@@ -87,20 +86,41 @@ export class Product extends Document {
   @Prop({ type: Types.ObjectId, ref: 'Market' })
   marketId?: Types.ObjectId;
 
-  // Geolocation from vendor
-  @Prop({ type: { type: String, enum: ['Point'], default: 'Point' }, coordinates: [Number] })
+  // ✅ Geolocation — use Object type, define properly after schema creation
+  @Prop({ type: Object })
   location?: {
     type: 'Point';
     coordinates: [number, number];
   };
 
   createdAt: Date;
-updatedAt: Date;
+  updatedAt: Date;
 }
 
 export const ProductSchema = SchemaFactory.createForClass(Product);
 
-ProductSchema.index({ location: '2dsphere' });
+// ✅ Define location path AFTER schema creation
+// This prevents auto-defaulting { type: "Point" } when no coordinates exist
+ProductSchema.path('location', new MongooseSchema(
+  {
+    type: {
+      type: String,
+      enum: ['Point'],
+      required: true,
+    },
+    coordinates: {
+      type: [Number],
+      required: true,
+    },
+  },
+  { _id: false }
+));
+
+// ✅ Location is NOT required at document level
+ProductSchema.path('location').required(false);
+
+// ✅ sparse: true — skips documents where location is absent
+ProductSchema.index({ location: '2dsphere' }, { sparse: true });
 ProductSchema.index({ vendorId: 1 });
 ProductSchema.index({ catalogItemId: 1 });
 ProductSchema.index({ category: 1, subcategory: 1 });

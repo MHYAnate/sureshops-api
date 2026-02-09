@@ -9,6 +9,18 @@ import { VendorsService } from '../vendors/vendors.service';
 import { CatalogService } from '../catalog/catalog.service';
 import { ProductStatus } from '../common/enums/product-status.enum';
 
+// ✅ Helper to validate location object
+function isValidLocation(location: any): boolean {
+  return (
+    location &&
+    location.type === 'Point' &&
+    Array.isArray(location.coordinates) &&
+    location.coordinates.length === 2 &&
+    typeof location.coordinates[0] === 'number' &&
+    typeof location.coordinates[1] === 'number'
+  );
+}
+
 @Injectable()
 export class ProductsService {
   constructor(
@@ -18,8 +30,10 @@ export class ProductsService {
   ) {}
 
   async create(dto: CreateProductDto, userId: string): Promise<Product> {
+    // Get vendor by user
     const vendor = await this.vendorsService.findByUser(userId);
 
+    // Try to match with catalog item
     let catalogItemId: Types.ObjectId | undefined;
     if (dto.sku) {
       const catalogItem = await this.catalogService.findBySku(dto.sku);
@@ -29,25 +43,37 @@ export class ProductsService {
       if (catalogItem) catalogItemId = catalogItem._id as Types.ObjectId;
     }
 
+    // Build create data
     const createData: Record<string, any> = {
       ...dto,
       vendorId: vendor._id,
       stateId: vendor.stateId,
       areaId: vendor.areaId,
       marketId: vendor.marketId,
-      location: vendor.location,
       status: ProductStatus.PENDING,
     };
 
+    // ✅ Only copy location if vendor has valid coordinates
+    if (isValidLocation(vendor.location)) {
+      createData.location = {
+        type: 'Point',
+        coordinates: vendor.location!.coordinates,
+      };
+    }
+    // ✅ Do NOT set location at all if vendor doesn't have valid coordinates
+
+    // Add catalog item ID if matched
     if (catalogItemId) {
       createData.catalogItemId = catalogItemId;
     }
 
     const product = await this.productModel.create(createData);
 
+    // Increment vendor product count and update price range
     await this.vendorsService.incrementProductCount(vendor._id.toString());
     await this.updateVendorPriceRange(vendor._id.toString());
 
+    // Update catalog price stats if linked
     if (catalogItemId) {
       await this.updateCatalogPriceStats(catalogItemId.toString());
     }
@@ -156,13 +182,13 @@ export class ProductsService {
       throw new NotFoundException('Product not found');
     }
 
+    // Increment view count
     await this.productModel.findByIdAndUpdate(id, { $inc: { views: 1 } });
 
     return product;
   }
 
   async findByVendor(vendorId: string): Promise<Product[]> {
-    // ✅ Convert string to ObjectId
     return this.productModel
       .find({ vendorId: new Types.ObjectId(vendorId), isActive: true })
       .sort({ createdAt: -1 });
@@ -212,6 +238,7 @@ export class ProductsService {
       throw new NotFoundException('Product not found');
     }
 
+    // Verify ownership
     const vendor = await this.vendorsService.findByUser(userId);
     if (product.vendorId.toString() !== vendor._id.toString()) {
       throw new ForbiddenException('You can only update your own products');
@@ -227,10 +254,12 @@ export class ProductsService {
       throw new NotFoundException('Product not found');
     }
 
+    // Update vendor price range if price changed
     if (dto.price !== undefined) {
       await this.updateVendorPriceRange(vendor._id.toString());
     }
 
+    // Update catalog price stats if linked
     if (product.catalogItemId) {
       await this.updateCatalogPriceStats(product.catalogItemId.toString());
     }
@@ -258,6 +287,7 @@ export class ProductsService {
       throw new NotFoundException('Product not found');
     }
 
+    // Verify ownership
     const vendor = await this.vendorsService.findByUser(userId);
     if (product.vendorId.toString() !== vendor._id.toString()) {
       throw new ForbiddenException('You can only delete your own products');
@@ -265,9 +295,11 @@ export class ProductsService {
 
     await this.productModel.deleteOne({ _id: id });
 
+    // Decrement vendor product count
     await this.vendorsService.decrementProductCount(vendor._id.toString());
     await this.updateVendorPriceRange(vendor._id.toString());
 
+    // Update catalog price stats if linked
     if (product.catalogItemId) {
       await this.updateCatalogPriceStats(product.catalogItemId.toString());
     }
