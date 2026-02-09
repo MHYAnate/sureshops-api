@@ -1,17 +1,17 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document, Types } from 'mongoose';
+import { Document, Types, Schema as MongooseSchema } from 'mongoose';
 import { VendorType } from '../../common/enums/vendor-type.enum';
 
 @Schema({ _id: false })
 class BankDetails {
-  @Prop({ required: true })
-  bankName: string;
+  @Prop()
+  bankName?: string;
 
-  @Prop({ required: true })
-  accountName: string;
+  @Prop()
+  accountName?: string;
 
-  @Prop({ required: true })
-  accountNumber: string;
+  @Prop()
+  accountNumber?: string;
 
   @Prop()
   bankCode?: string;
@@ -114,8 +114,8 @@ export class Vendor extends Document {
   @Prop()
   landmark?: string;
 
-  // Geolocation
-  @Prop({ type: { type: String, enum: ['Point'], default: 'Point' }, coordinates: [Number] })
+  // ✅ Geolocation — use Object type, define properly after schema creation
+  @Prop({ type: Object })
   location?: {
     type: 'Point';
     coordinates: [number, number];
@@ -180,12 +180,33 @@ export class Vendor extends Document {
   isOpen: boolean;
 
   createdAt: Date;
-updatedAt: Date;
+  updatedAt: Date;
 }
 
 export const VendorSchema = SchemaFactory.createForClass(Vendor);
 
-VendorSchema.index({ location: '2dsphere' });
+// ✅ Define location path AFTER schema creation — same pattern as Market schema
+// This prevents auto-defaulting { type: "Point" } when no coordinates exist
+VendorSchema.path('location', new MongooseSchema(
+  {
+    type: {
+      type: String,
+      enum: ['Point'],
+      required: true,
+    },
+    coordinates: {
+      type: [Number],
+      required: true,
+    },
+  },
+  { _id: false }
+));
+
+// ✅ Location is NOT required at document level
+VendorSchema.path('location').required(false);
+
+// ✅ sparse: true — skips documents where location is absent
+VendorSchema.index({ location: '2dsphere' }, { sparse: true });
 VendorSchema.index({ stateId: 1, areaId: 1, marketId: 1 });
 VendorSchema.index({ userId: 1 });
 VendorSchema.index({ vendorType: 1 });

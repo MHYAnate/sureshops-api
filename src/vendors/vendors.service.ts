@@ -20,17 +20,31 @@ export class VendorsService {
   async create(dto: CreateVendorDto, userId: string): Promise<Vendor> {
     const vendorData: any = { ...dto, userId };
 
-    // Handle coordinates → GeoJSON location
-    if (dto.coordinates) {
+    // ✅ Only set location if valid coordinates are provided
+    if (
+      dto.coordinates &&
+      Array.isArray(dto.coordinates) &&
+      dto.coordinates.length === 2 &&
+      typeof dto.coordinates[0] === 'number' &&
+      typeof dto.coordinates[1] === 'number'
+    ) {
       vendorData.location = {
         type: 'Point',
         coordinates: dto.coordinates,
       };
     }
+    // ✅ Always remove coordinates from the data (it's not a schema field)
     delete vendorData.coordinates;
 
-    // operatingHours is already nested from the DTO — no transformation needed
-    // It goes directly into the schema as-is
+    // ✅ Ensure no partial location object exists
+    if (
+      vendorData.location &&
+      (!vendorData.location.coordinates ||
+        !Array.isArray(vendorData.location.coordinates) ||
+        vendorData.location.coordinates.length !== 2)
+    ) {
+      delete vendorData.location;
+    }
 
     const vendor = await this.vendorModel.create(vendorData);
 
@@ -190,13 +204,31 @@ export class VendorsService {
     }
 
     const updateData: any = { ...dto };
-    if (dto.coordinates) {
+
+    // ✅ Only set location if valid coordinates provided
+    if (
+      dto.coordinates &&
+      Array.isArray(dto.coordinates) &&
+      dto.coordinates.length === 2 &&
+      typeof dto.coordinates[0] === 'number' &&
+      typeof dto.coordinates[1] === 'number'
+    ) {
       updateData.location = {
         type: 'Point',
         coordinates: dto.coordinates,
       };
     }
     delete updateData.coordinates;
+
+    // ✅ Ensure no partial location object
+    if (
+      updateData.location &&
+      (!updateData.location.coordinates ||
+        !Array.isArray(updateData.location.coordinates) ||
+        updateData.location.coordinates.length !== 2)
+    ) {
+      delete updateData.location;
+    }
 
     const updatedVendor = await this.vendorModel
       .findByIdAndUpdate(id, updateData, { new: true })
@@ -213,13 +245,31 @@ export class VendorsService {
 
   async adminUpdate(id: string, dto: UpdateVendorDto): Promise<Vendor> {
     const updateData: any = { ...dto };
-    if (dto.coordinates) {
+
+    // ✅ Only set location if valid coordinates provided
+    if (
+      dto.coordinates &&
+      Array.isArray(dto.coordinates) &&
+      dto.coordinates.length === 2 &&
+      typeof dto.coordinates[0] === 'number' &&
+      typeof dto.coordinates[1] === 'number'
+    ) {
       updateData.location = {
         type: 'Point',
         coordinates: dto.coordinates,
       };
     }
     delete updateData.coordinates;
+
+    // ✅ Ensure no partial location object
+    if (
+      updateData.location &&
+      (!updateData.location.coordinates ||
+        !Array.isArray(updateData.location.coordinates) ||
+        updateData.location.coordinates.length !== 2)
+    ) {
+      delete updateData.location;
+    }
 
     const vendor = await this.vendorModel
       .findByIdAndUpdate(id, updateData, { new: true })
