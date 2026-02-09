@@ -58,7 +58,7 @@ export class Product extends Document {
   @Prop({ type: Object })
   specifications?: Record<string, any>;
 
-  @Prop({ type: String, enum: ProductStatus, default: ProductStatus.PENDING })
+  @Prop({ type: String, enum: ProductStatus, default: ProductStatus.APPROVED })
   status: ProductStatus;
 
   @Prop({ default: 0 })
