@@ -50,7 +50,7 @@ export class ProductsService {
       stateId: vendor.stateId,
       areaId: vendor.areaId,
       marketId: vendor.marketId,
-      status: ProductStatus.PENDING,
+      status: ProductStatus.APPROVED,
     };
 
     // ✅ Only copy location if vendor has valid coordinates
