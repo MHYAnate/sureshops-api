@@ -1,0 +1,4144 @@
+same for this part too
+
+@Injectable()
+export class ProductsService {
+  constructor(
+    @InjectModel(Product.name) private productModel: Model<Product>,
+    private vendorsService: VendorsService,
+    private catalogService: CatalogService,
+  ) {}
+
+  async create(dto: CreateProductDto, userId: string): Promise<Product> {
+    // Get vendor by user
+    const vendor = await this.vendorsService.findByUser(userId);
+
+    // Try to match with catalog item
+    let catalogItemId: Types.ObjectId | undefined;
+    if (dto.sku) {
+      const catalogItem = await this.catalogService.findBySku(dto.sku);
+      if (catalogItem) catalogItemId = catalogItem._id as Types.ObjectId;
+    } else if (dto.barcode) {
+      const catalogItem = await this.catalogService.findByBarcode(dto.barcode);
+      if (catalogItem) catalogItemId = catalogItem._id as Types.ObjectId;
+    }
+
+    // Build create data
+    const createData: Record<string, any> = {
+      ...dto,
+      vendorId: vendor._id,
+      stateId: vendor.stateId,
+      areaId: vendor.areaId,
+      marketId: vendor.marketId,
+      status: ProductStatus.APPROVED,
+    };
+
+    // ✅ Only copy location if vendor has valid coordinates
+    if (isValidLocation(vendor.location)) {
+      createData.location = {
+        type: 'Point',
+        coordinates: vendor.location!.coordinates,
+      };
+    }
+    // ✅ Do NOT set location at all if vendor doesn't have valid coordinates
+
+    // Add catalog item ID if matched
+    if (catalogItemId) {
+      createData.catalogItemId = catalogItemId;
+    }
+
+    const product = await this.productModel.create(createData);
+
+    // Increment vendor product count and update price range
+    await this.vendorsService.incrementProductCount(vendor._id.toString());
+    await this.updateVendorPriceRange(vendor._id.toString());
+
+    // Update catalog price stats if linked
+    if (catalogItemId) {
+      await this.updateCatalogPriceStats(catalogItemId.toString());
+    }
+
+    return product;
+  }
+
+  async findAll(filterDto: FilterProductDto): Promise<{
+    products: Product[];
+    total: number;
+    page: number;
+    totalPages: number;
+  }> {
+    const {
+      page = 1,
+      limit = 20,
+      vendorId,
+      category,
+      subcategory,
+      type,
+      status,
+      search,
+      minPrice,
+      maxPrice,
+      stateId,
+      areaId,
+      marketId,
+      inStock,
+      sortBy = 'createdAt',
+      sortOrder = 'desc',
+    } = filterDto;
+
+    const query: Record<string, any> = { isActive: true };
+
+    // ✅ Convert all ref IDs to ObjectId
+    if (vendorId) query.vendorId = new Types.ObjectId(vendorId);
+    if (stateId) query.stateId = new Types.ObjectId(stateId);
+    if (areaId) query.areaId = new Types.ObjectId(areaId);
+    if (marketId) query.marketId = new Types.ObjectId(marketId);
+    if (category) query.category = category;
+    if (subcategory) query.subcategory = subcategory;
+    if (type) query.type = type;
+    if (status) query.status = status;
+    else query.status = ProductStatus.APPROVED;
+    if (inStock !== undefined) query.inStock = inStock;
+
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { brand: { $regex: search, $options: 'i' } },
+        { tags: { $in: [new RegExp(search, 'i')] } },
+      ];
+    }
+
+    if (minPrice !== undefined || maxPrice !== undefined) {
+      query.price = {};
+      if (minPrice !== undefined) query.price.$gte = minPrice;
+      if (maxPrice !== undefined) query.price.$lte = maxPrice;
+    }
+
+    const skip = (page - 1) * limit;
+    const sortOptions: Record<string, 1 | -1> = {};
+    sortOptions[sortBy] = sortOrder === 'asc' ? 1 : -1;
+
+    const [products, total] = await Promise.all([
+      this.productModel
+        .find(query)
+        .populate({
+          path: 'vendorId',
+          select: 'businessName shopImages contactDetails bankDetails stateId areaId marketId shopNumber rating isVerified',
+          populate: [
+            { path: 'stateId', select: 'name' },
+            { path: 'areaId', select: 'name' },
+            { path: 'marketId', select: 'name type' },
+          ],
+        })
+        .skip(skip)
+        .limit(limit)
+        .sort(sortOptions),
+      this.productModel.countDocuments(query),
+    ]);
+
+    return {
+      products,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async findById(id: string): Promise<Product> {
+    const product = await this.productModel
+      .findById(id)
+      .populate({
+        path: 'vendorId',
+        select: 'businessName businessDescription shopImages contactDetails bankDetails stateId areaId marketId shopNumber shopFloor shopBlock shopAddress landmark rating isVerified operatingHours isOpen',
+        populate: [
+          { path: 'stateId', select: 'name code' },
+          { path: 'areaId', select: 'name' },
+          { path: 'marketId', select: 'name type address entrancePhoto layoutMap' },
+        ],
+      });
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    // Increment view count
+    await this.productModel.findByIdAndUpdate(id, { $inc: { views: 1 } });
+
+    return product;
+  }
+
+  async findByVendor(vendorId: string): Promise<Product[]> {
+    return this.productModel
+      .find({ vendorId: new Types.ObjectId(vendorId), isActive: true })
+      .sort({ createdAt: -1 });
+  }
+
+  async getMyProducts(userId: string): Promise<Product[]> {
+    const vendor = await this.vendorsService.findByUser(userId);
+    return this.productModel
+      .find({ vendorId: vendor._id })
+      .sort({ createdAt: -1 });
+  }
+
+  async findNearby(
+    longitude: number,
+    latitude: number,
+    maxDistanceKm: number = 5,
+    category?: string,
+  ): Promise<Product[]> {
+    const query: Record<string, any> = {
+      location: {
+        $near: {
+          $geometry: {
+            type: 'Point',
+            coordinates: [longitude, latitude],
+          },
+          $maxDistance: maxDistanceKm * 1000,
+        },
+      },
+      isActive: true,
+      status: ProductStatus.APPROVED,
+    };
+
+    if (category) query.category = category;
+
+    return this.productModel
+      .find(query)
+      .populate({
+        path: 'vendorId',
+        select: 'businessName shopImages contactDetails rating isVerified shopNumber',
+      })
+      .limit(50);
+  }
+
+  async update(id: string, dto: UpdateProductDto, userId: string): Promise<Product> {
+    const product = await this.productModel.findById(id);
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    // Verify ownership
+    const vendor = await this.vendorsService.findByUser(userId);
+    if (product.vendorId.toString() !== vendor._id.toString()) {
+      throw new ForbiddenException('You can only update your own products');
+    }
+
+    const updatedProduct = await this.productModel.findByIdAndUpdate(
+      id,
+      dto,
+      { new: true },
+    );
+
+    if (!updatedProduct) {
+      throw new NotFoundException('Product not found');
+    }
+
+    // Update vendor price range if price changed
+    if (dto.price !== undefined) {
+      await this.updateVendorPriceRange(vendor._id.toString());
+    }
+
+    // Update catalog price stats if linked
+    if (product.catalogItemId) {
+      await this.updateCatalogPriceStats(product.catalogItemId.toString());
+    }
+
+    return updatedProduct;
+  }
+
+  async adminUpdate(id: string, dto: UpdateProductDto): Promise<Product> {
+    const product = await this.productModel.findByIdAndUpdate(
+      id,
+      dto,
+      { new: true },
+    );
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    return product;
+  }
+
+  async delete(id: string, userId: string): Promise<void> {
+    const product = await this.productModel.findById(id);
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    // Verify ownership
+    const vendor = await this.vendorsService.findByUser(userId);
+    if (product.vendorId.toString() !== vendor._id.toString()) {
+      throw new ForbiddenException('You can only delete your own products');
+    }
+
+    await this.productModel.deleteOne({ _id: id });
+
+    // Decrement vendor product count
+    await this.vendorsService.decrementProductCount(vendor._id.toString());
+    await this.updateVendorPriceRange(vendor._id.toString());
+
+    // Update catalog price stats if linked
+    if (product.catalogItemId) {
+      await this.updateCatalogPriceStats(product.catalogItemId.toString());
+    }
+  }
+
+  private async updateVendorPriceRange(vendorId: string): Promise<void> {
+    const priceStats = await this.productModel.aggregate([
+      {
+        $match: {
+          vendorId: new Types.ObjectId(vendorId),
+          isActive: true,
+          status: ProductStatus.APPROVED,
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          minPrice: { $min: '$price' },
+          maxPrice: { $max: '$price' },
+        },
+      },
+    ]);
+
+    if (priceStats.length > 0) {
+      await this.vendorsService.updatePriceRange(
+        vendorId,
+        priceStats[0].minPrice,
+        priceStats[0].maxPrice,
+      );
+    }
+  }
+
+  private async updateCatalogPriceStats(catalogItemId: string): Promise<void> {
+    const prices = await this.productModel
+      .find({
+        catalogItemId: new Types.ObjectId(catalogItemId),
+        isActive: true,
+        status: ProductStatus.APPROVED,
+      })
+      .select('price');
+
+    const priceValues = prices.map((p) => p.price);
+    await this.catalogService.updatePriceStats(catalogItemId, priceValues);
+  }
+}
+import { IsString, IsNumber, IsOptional, IsEnum, IsMongoId, Min, Max, IsArray } from 'class-validator';
+import { ReviewType } from '../schemas/review.schema';
+
+export class CreateReviewDto {
+  @IsEnum(ReviewType)
+  type: ReviewType;
+
+  @IsMongoId()
+  @IsOptional()
+  productId?: string;
+
+  @IsMongoId()
+  @IsOptional()
+  vendorId?: string;
+
+  @IsNumber()
+  @Min(1)
+  @Max(5)
+  rating: number;
+
+  @IsString()
+  @IsOptional()
+  title?: string;
+
+  @IsString()
+  @IsOptional()
+  comment?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  images?: string[];
+}
+import { IsString, IsNumber, IsOptional, Min, Max, IsArray, IsBoolean } from 'class-validator';
+
+export class UpdateReviewDto {
+  @IsNumber()
+  @Min(1)
+  @Max(5)
+  @IsOptional()
+  rating?: number;
+
+  @IsString()
+  @IsOptional()
+  title?: string;
+
+  @IsString()
+  @IsOptional()
+  comment?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  images?: string[];
+
+  @IsBoolean()
+  @IsOptional()
+  isActive?: boolean;
+}
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document, Types } from 'mongoose';
+
+export enum ReviewType {
+  PRODUCT = 'product',
+  VENDOR = 'vendor',
+}
+
+@Schema({ timestamps: true })
+export class Review extends Document {
+  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  userId: Types.ObjectId;
+
+  @Prop({ type: String, enum: ReviewType, required: true })
+  type: ReviewType;
+
+  @Prop({ type: Types.ObjectId, ref: 'Product' })
+  productId?: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'Vendor' })
+  vendorId?: Types.ObjectId;
+
+  @Prop({ required: true, min: 1, max: 5 })
+  rating: number;
+
+  @Prop()
+  title?: string;
+
+  @Prop()
+  comment?: string;
+
+  @Prop([String])
+  images?: string[];
+
+  @Prop({ default: 0 })
+  helpfulCount: number;
+
+  @Prop({ default: true })
+  isVerified: boolean;
+
+  @Prop({ default: true })
+  isActive: boolean;
+}
+
+export const ReviewSchema = SchemaFactory.createForClass(Review);
+
+ReviewSchema.index({ productId: 1, userId: 1 }, { unique: true, sparse: true });
+ReviewSchema.index({ vendorId: 1, userId: 1 }, { unique: true, sparse: true });
+ReviewSchema.index({ type: 1, productId: 1 });
+ReviewSchema.index({ type: 1, vendorId: 1 });
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+  Request,
+} from '@nestjs/common';
+import { ReviewsService } from './reviews.service';
+import { CreateReviewDto } from './dto/create-review.dto';
+import { UpdateReviewDto } from './dto/update-review.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+
+@Controller('reviews')
+export class ReviewsController {
+  constructor(private reviewsService: ReviewsService) {}
+
+  @Get('product/:productId')
+  getProductReviews(
+    @Param('productId') productId: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    return this.reviewsService.findByProduct(productId, page, limit);
+  }
+
+  @Get('vendor/:vendorId')
+  getVendorReviews(
+    @Param('vendorId') vendorId: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    return this.reviewsService.findByVendor(vendorId, page, limit);
+  }
+
+  @Get('my-reviews')
+  @UseGuards(JwtAuthGuard)
+  getMyReviews(@Request() req) {
+    return this.reviewsService.findByUser(req.user.id);
+  }
+
+  @Post()
+  @UseGuards(JwtAuthGuard)
+  create(@Request() req, @Body() dto: CreateReviewDto) {
+    return this.reviewsService.create(req.user.id, dto);
+  }
+
+  @Put(':id')
+  @UseGuards(JwtAuthGuard)
+  update(
+    @Param('id') id: string,
+    @Request() req,
+    @Body() dto: UpdateReviewDto,
+  ) {
+    return this.reviewsService.update(id, req.user.id, dto);
+  }
+
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard)
+  delete(@Param('id') id: string, @Request() req) {
+    return this.reviewsService.delete(id, req.user.id);
+  }
+
+  @Post(':id/helpful')
+  markHelpful(@Param('id') id: string) {
+    return this.reviewsService.markHelpful(id);
+  }
+}
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { ReviewsController } from './reviews.controller';
+import { ReviewsService } from './reviews.service';
+import { Review, ReviewSchema } from './schemas/review.schema';
+import { Vendor, VendorSchema } from '../vendors/schemas/vendor.schema';
+import { Product, ProductSchema } from '../products/schemas/product.schema';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([
+      { name: Review.name, schema: ReviewSchema },
+      { name: Vendor.name, schema: VendorSchema },
+      { name: Product.name, schema: ProductSchema },
+    ]),
+  ],
+  controllers: [ReviewsController],
+  providers: [ReviewsService],
+  exports: [ReviewsService],
+})
+export class ReviewsModule {}
+import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+  ForbiddenException,
+} from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Review, ReviewType } from './schemas/review.schema';
+import { Vendor } from '../vendors/schemas/vendor.schema';
+import { Product } from '../products/schemas/product.schema';
+import { CreateReviewDto } from './dto/create-review.dto';
+import { UpdateReviewDto } from './dto/update-review.dto';
+
+@Injectable()
+export class ReviewsService {
+  constructor(
+    @InjectModel(Review.name) private reviewModel: Model<Review>,
+    @InjectModel(Vendor.name) private vendorModel: Model<Vendor>,
+    @InjectModel(Product.name) private productModel: Model<Product>,
+  ) {}
+
+  async create(userId: string, dto: CreateReviewDto): Promise<Review> {
+    // Check for existing review
+    const existingQuery: any = { userId, type: dto.type };
+    if (dto.type === ReviewType.PRODUCT) {
+      existingQuery.productId = dto.productId;
+    } else {
+      existingQuery.vendorId = dto.vendorId;
+    }
+
+    const existing = await this.reviewModel.findOne(existingQuery);
+    if (existing) {
+      throw new ConflictException('You have already reviewed this item');
+    }
+
+    const review = await this.reviewModel.create({
+      userId,
+      ...dto,
+    });
+
+    // ✅ FIX 1: Extract itemId with a fallback, assert it's defined
+    const itemId = dto.productId ?? dto.vendorId;
+    if (!itemId) {
+      throw new NotFoundException('Product or Vendor ID is required');
+    }
+    await this.updateItemRating(dto.type, itemId);
+
+    return review;
+  }
+
+  async findByProduct(
+    productId: string,
+    page: number = 1,
+    limit: number = 10,
+  ): Promise<{
+    reviews: Review[];
+    total: number;
+    averageRating: number;
+    ratingDistribution: { [key: number]: number };
+  }> {
+    const skip = (page - 1) * limit;
+
+    const [reviews, total, ratingAgg] = await Promise.all([
+      this.reviewModel
+        .find({ productId, isActive: true })
+        .populate('userId', 'firstName lastName avatar')
+        .skip(skip)
+        .limit(limit)
+        .sort({ createdAt: -1 }),
+      this.reviewModel.countDocuments({ productId, isActive: true }),
+      this.reviewModel.aggregate([
+        { $match: { productId, isActive: true } },
+        {
+          $group: {
+            _id: null,
+            averageRating: { $avg: '$rating' },
+            ratings: { $push: '$rating' },
+          },
+        },
+      ]),
+    ]);
+
+    const ratingDistribution: { [key: number]: number } = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    if (ratingAgg.length > 0 && ratingAgg[0].ratings) {
+      ratingAgg[0].ratings.forEach((r: number) => {
+        ratingDistribution[r]++;
+      });
+    }
+
+    return {
+      reviews,
+      total,
+      averageRating: ratingAgg[0]?.averageRating || 0,
+      ratingDistribution,
+    };
+  }
+
+  async findByVendor(
+    vendorId: string,
+    page: number = 1,
+    limit: number = 10,
+  ): Promise<{
+    reviews: Review[];
+    total: number;
+    averageRating: number;
+    ratingDistribution: { [key: number]: number };
+  }> {
+    const skip = (page - 1) * limit;
+
+    const [reviews, total, ratingAgg] = await Promise.all([
+      this.reviewModel
+        .find({ vendorId, isActive: true })
+        .populate('userId', 'firstName lastName avatar')
+        .skip(skip)
+        .limit(limit)
+        .sort({ createdAt: -1 }),
+      this.reviewModel.countDocuments({ vendorId, isActive: true }),
+      this.reviewModel.aggregate([
+        { $match: { vendorId, isActive: true } },
+        {
+          $group: {
+            _id: null,
+            averageRating: { $avg: '$rating' },
+            ratings: { $push: '$rating' },
+          },
+        },
+      ]),
+    ]);
+
+    const ratingDistribution: { [key: number]: number } = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    if (ratingAgg.length > 0 && ratingAgg[0].ratings) {
+      ratingAgg[0].ratings.forEach((r: number) => {
+        ratingDistribution[r]++;
+      });
+    }
+
+    return {
+      reviews,
+      total,
+      averageRating: ratingAgg[0]?.averageRating || 0,
+      ratingDistribution,
+    };
+  }
+
+  async findByUser(userId: string): Promise<Review[]> {
+    return this.reviewModel
+      .find({ userId })
+      .populate('productId', 'name images')
+      .populate('vendorId', 'businessName shopImages')
+      .sort({ createdAt: -1 });
+  }
+
+  async update(id: string, userId: string, dto: UpdateReviewDto): Promise<Review> {
+    const review = await this.reviewModel.findById(id);
+    if (!review) {
+      throw new NotFoundException('Review not found');
+    }
+
+    if (review.userId.toString() !== userId) {
+      throw new ForbiddenException('You can only update your own reviews');
+    }
+
+    // ✅ FIX 2: Handle null return from findByIdAndUpdate
+    const updated = await this.reviewModel.findByIdAndUpdate(id, dto, { new: true });
+    if (!updated) {
+      throw new NotFoundException('Review not found after update');
+    }
+
+    // Update rating if rating changed
+    if (dto.rating !== undefined) {
+      // ✅ FIX 3: Guard against undefined itemId
+      const itemId = review.productId?.toString() ?? review.vendorId?.toString();
+      if (itemId) {
+        await this.updateItemRating(review.type, itemId);
+      }
+    }
+
+    return updated;
+  }
+
+  async delete(id: string, userId: string): Promise<void> {
+    const review = await this.reviewModel.findById(id);
+    if (!review) {
+      throw new NotFoundException('Review not found');
+    }
+
+    if (review.userId.toString() !== userId) {
+      throw new ForbiddenException('You can only delete your own reviews');
+    }
+
+    await this.reviewModel.deleteOne({ _id: id });
+
+    // ✅ FIX 4: Guard against undefined itemId
+    const itemId = review.productId?.toString() ?? review.vendorId?.toString();
+    if (itemId) {
+      await this.updateItemRating(review.type, itemId);
+    }
+  }
+
+  async markHelpful(id: string): Promise<Review> {
+    // ✅ FIX 5: Handle null return from findByIdAndUpdate
+    const review = await this.reviewModel.findByIdAndUpdate(
+      id,
+      { $inc: { helpfulCount: 1 } },
+      { new: true },
+    );
+    if (!review) {
+      throw new NotFoundException('Review not found');
+    }
+    return review;
+  }
+
+  private async updateItemRating(type: ReviewType, itemId: string): Promise<void> {
+    const query =
+      type === ReviewType.PRODUCT
+        ? { productId: itemId, isActive: true }
+        : { vendorId: itemId, isActive: true };
+
+    const result = await this.reviewModel.aggregate([
+      { $match: query },
+      {
+        $group: {
+          _id: null,
+          averageRating: { $avg: '$rating' },
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const rating = result[0]?.averageRating || 0;
+    const count = result[0]?.count || 0;
+
+    if (type === ReviewType.VENDOR) {
+      await this.vendorModel.findByIdAndUpdate(itemId, {
+        rating: Math.round(rating * 10) / 10,
+        reviewCount: count,
+      });
+    }
+  }
+}
+export interface ProductSearchResult {
+  id: string;
+  name: string;
+  description?: string;
+  brand?: string;
+  category: string;
+  subcategory?: string;
+  images: string[];
+  
+  // Price info from this specific vendor
+  price: number;
+  originalPrice?: number;
+  currency: string;
+  inStock: boolean;
+  
+  // Vendor info
+  vendor: {
+    id: string;
+    businessName: string;
+    logo?: string;
+    rating: number;
+    isVerified: boolean;
+    contactDetails: {
+      phone: string;
+      whatsapp?: string;
+    };
+  };
+  
+  // Location info
+  location: {
+    state: { id: string; name: string };
+    area: { id: string; name: string };
+    market?: { id: string; name: string; type: string };
+    shopNumber?: string;
+    shopAddress?: string;
+    coordinates?: [number, number];
+    distance?: number; // in km, if geo search
+  };
+}
+
+export interface ProductWithVendors {
+  // Product master info
+  id: string;
+  catalogItemId?: string;
+  name: string;
+  description?: string;
+  brand?: string;
+  category: string;
+  subcategory?: string;
+  images: string[];
+  
+  // Price summary
+  priceRange: {
+    lowest: number;
+    highest: number;
+    average: number;
+    currency: string;
+  };
+  
+  // All vendors selling this product
+  totalVendors: number;
+  vendors: VendorListing[];
+}
+
+export interface VendorListing {
+  vendorId: string;
+  productId: string;
+  businessName: string;
+  logo?: string;
+  entrancePhoto?: string;
+  rating: number;
+  isVerified: boolean;
+  
+  // This vendor's price
+  price: number;
+  originalPrice?: number;
+  inStock: boolean;
+  quantity: number;
+  
+  // Contact
+  contactDetails: {
+    phone: string;
+    whatsapp?: string;
+    email?: string;
+  };
+  
+  // Banking (for external transactions)
+  bankDetails?: {
+    bankName: string;
+    accountName: string;
+    accountNumber: string;
+  };
+  
+  // Location
+  location: {
+    state: { id: string; name: string };
+    area: { id: string; name: string };
+    market?: { id: string; name: string; type: string };
+    shopNumber?: string;
+    shopFloor?: string;
+    shopBlock?: string;
+    shopAddress?: string;
+    landmark?: string;
+    coordinates?: [number, number];
+    distance?: number;
+  };
+  
+  // Operating hours
+  operatingHours?: {
+    openingTime?: string;
+    closingTime?: string;
+    operatingDays?: string[];
+    isOpen: boolean;
+  };
+}
+
+export interface ShopSearchResult {
+  id: string;
+  businessName: string;
+  businessDescription?: string;
+  vendorType: string;
+  
+  // Images
+  logo?: string;
+  entrancePhoto?: string;
+  layoutMap?: string;
+  
+  // Stats
+  rating: number;
+  reviewCount: number;
+  totalProducts: number;
+  isVerified: boolean;
+  isFeatured: boolean;
+  
+  // Categories
+  categories: string[];
+  
+  // Price Range
+  priceRange: {
+    min: number;
+    max: number;
+  };
+  
+  // Contact
+  contactDetails: {
+    phone: string;
+    whatsapp?: string;
+    email?: string;
+    instagram?: string;
+  };
+  
+  // Banking
+  bankDetails?: {
+    bankName: string;
+    accountName: string;
+    accountNumber: string;
+  };
+  
+  // Location
+  location: {
+    state: { id: string; name: string };
+    area: { id: string; name: string };
+    market?: { id: string; name: string; type: string };
+    shopNumber?: string;
+    shopFloor?: string;
+    shopBlock?: string;
+    shopAddress?: string;
+    landmark?: string;
+    coordinates?: [number, number];
+    distance?: number;
+  };
+  
+  // Operating
+  operatingHours?: {
+    openingTime?: string;
+    closingTime?: string;
+    operatingDays?: string[];
+    isOpen: boolean;
+  };
+  
+  // Sample products
+  featuredProducts?: {
+    id: string;
+    name: string;
+    price: number;
+    image?: string;
+  }[];
+}
+
+export interface SearchResults {
+  query: string | undefined; 
+  searchType: string;
+  
+  products?: {
+    items: ProductSearchResult[];
+    total: number;
+    page: number;
+    totalPages: number;
+  };
+  
+  shops?: {
+    items: ShopSearchResult[];
+    total: number;
+    page: number;
+    totalPages: number;
+  };
+  
+  // Aggregated product with all vendors
+  productComparison?: {
+    items: ProductWithVendors[];
+    total: number;
+  };
+  
+  // Filters available based on results
+  availableFilters: {
+    states: { id: string; name: string; count: number }[];
+    areas: { id: string; name: string; count: number }[];
+    markets: { id: string; name: string; count: number }[];
+    categories: { name: string; count: number }[];
+    brands: { name: string; count: number }[];
+    priceRange: { min: number; max: number };
+  };
+  
+  meta: {
+    timestamp: string;
+    took: number; // ms
+  };
+}
+import {
+  IsOptional,
+  IsString,
+  IsEnum,
+  IsNumber,
+  IsMongoId,
+  IsBoolean,
+  IsArray,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+
+export enum SearchType {
+  PRODUCTS = 'products',
+  SHOPS = 'shops',
+  ALL = 'all',
+}
+
+export enum SortBy {
+  RELEVANCE = 'relevance',
+  PRICE_LOW = 'price_low',
+  PRICE_HIGH = 'price_high',
+  RATING = 'rating',
+  NEWEST = 'newest',
+  DISTANCE = 'distance',
+  POPULARITY = 'popularity',
+}
+
+export class SearchDto {
+  @IsOptional()
+  @IsString()
+  query?: string;
+
+  @IsOptional()
+  @IsEnum(SearchType)
+  searchType?: SearchType = SearchType.ALL;
+
+  // Location Filters
+  @IsOptional()
+  @IsMongoId()
+  stateId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  areaId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  marketId?: string;
+
+  // Geolocation
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  longitude?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  latitude?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  maxDistance?: number = 10;
+
+  // Category Filters
+  @IsOptional()
+  @IsString()
+  category?: string;
+
+  @IsOptional()
+  @IsString()
+  subcategory?: string;
+
+  @IsOptional()
+  @IsString()
+  brand?: string;
+
+  // Price Filters
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  minPrice?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  maxPrice?: number;
+
+  // Other Filters
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  inStock?: boolean;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  verifiedOnly?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  tags?: string[];
+
+  // Sorting
+  @IsOptional()
+  @IsEnum(SortBy)
+  sortBy?: SortBy = SortBy.RELEVANCE;
+
+  // Pagination
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  page?: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  limit?: number = 20;
+}
+
+export class ProductSearchDto extends SearchDto {
+  @IsOptional()
+  @IsString()
+  sku?: string;
+
+  @IsOptional()
+  @IsString()
+  barcode?: string;
+}
+
+export class ShopSearchDto extends SearchDto {
+  @IsOptional()
+  @IsEnum([
+    'market_shop',
+    'mall_shop',
+    'home_based',
+    'street_shop',
+    'online_only',
+  ])
+  vendorType?: string;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  isOpen?: boolean;
+}
+import {
+  Controller,
+  Get,
+  Query,
+  Param,
+  InternalServerErrorException,
+} from '@nestjs/common';
+import { SearchService } from './search.service';
+import {
+  SearchDto,
+  ProductSearchDto,
+  ShopSearchDto,
+} from './dto/search.dto';
+
+@Controller('search')
+export class SearchController {
+  constructor(private searchService: SearchService) {}
+
+  // Main search endpoint - searches both products and shops
+  @Get()
+  async search(@Query() dto: SearchDto) {
+    try {
+      return await this.searchService.search(dto);
+    } catch (error) {
+      console.error('Search controller error:', error.message, error.stack);
+      throw new InternalServerErrorException(
+        `Search failed: ${error.message}`,
+      );
+    }
+  }
+
+  // Search products only
+  @Get('products')
+  async searchProducts(@Query() dto: ProductSearchDto) {
+    try {
+      dto.searchType = 'products' as any;
+      return await this.searchService.searchProducts(dto);
+    } catch (error) {
+      console.error(
+        'Product search controller error:',
+        error.message,
+        error.stack,
+      );
+      throw new InternalServerErrorException(
+        `Product search failed: ${error.message}`,
+      );
+    }
+  }
+
+  // Search shops only
+  @Get('shops')
+  async searchShops(@Query() dto: ShopSearchDto) {
+    try {
+      return await this.searchService.searchShops(dto);
+    } catch (error) {
+      console.error(
+        'Shop search controller error:',
+        error.message,
+        error.stack,
+      );
+      throw new InternalServerErrorException(
+        `Shop search failed: ${error.message}`,
+      );
+    }
+  }
+
+  // Get all vendors selling a specific product with price comparison
+  @Get('product/:productName/vendors')
+  async getProductVendors(
+    @Param('productName') productName: string,
+    @Query() filters: SearchDto,
+  ) {
+    try {
+      return await this.searchService.getProductVendors(
+        productName,
+        filters,
+      );
+    } catch (error) {
+      console.error(
+        'Product vendors controller error:',
+        error.message,
+        error.stack,
+      );
+      throw new InternalServerErrorException(
+        `Product vendors search failed: ${error.message}`,
+      );
+    }
+  }
+
+  // Get product comparison across vendors
+  @Get('compare')
+  async getProductComparison(@Query() dto: SearchDto) {
+    try {
+      return await this.searchService.getProductComparison(dto);
+    } catch (error) {
+      console.error(
+        'Product comparison controller error:',
+        error.message,
+        error.stack,
+      );
+      throw new InternalServerErrorException(
+        `Product comparison failed: ${error.message}`,
+      );
+    }
+  }
+
+  // Get a shop's products
+  @Get('shop/:vendorId/products')
+  async getShopProducts(
+    @Param('vendorId') vendorId: string,
+    @Query('category') category?: string,
+    @Query('minPrice') minPrice?: number,
+    @Query('maxPrice') maxPrice?: number,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    try {
+      return await this.searchService.getShopProducts(vendorId, {
+        category,
+        minPrice,
+        maxPrice,
+        page,
+        limit,
+      });
+    } catch (error) {
+      console.error(
+        'Shop products controller error:',
+        error.message,
+        error.stack,
+      );
+      throw new InternalServerErrorException(
+        `Shop products search failed: ${error.message}`,
+      );
+    }
+  }
+
+  // Get similar products
+  @Get('product/:productId/similar')
+  async getSimilarProducts(
+    @Param('productId') productId: string,
+    @Query('limit') limit?: number,
+  ) {
+    try {
+      return await this.searchService.getSimilarProducts(productId, limit);
+    } catch (error) {
+      console.error(
+        'Similar products controller error:',
+        error.message,
+        error.stack,
+      );
+      throw new InternalServerErrorException(
+        `Similar products search failed: ${error.message}`,
+      );
+    }
+  }
+
+  // Get available filters for current search
+  @Get('filters')
+  async getFilters(@Query() dto: SearchDto) {
+    try {
+      return await this.searchService.getAvailableFilters(dto);
+    } catch (error) {
+      console.error(
+        'Filters controller error:',
+        error.message,
+        error.stack,
+      );
+      throw new InternalServerErrorException(
+        `Filters retrieval failed: ${error.message}`,
+      );
+    }
+  }
+}
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { SearchController } from './search.controller';
+import { SearchService } from './search.service';
+import { Product, ProductSchema } from '../products/schemas/product.schema';
+import { Vendor, VendorSchema } from '../vendors/schemas/vendor.schema';
+import { CatalogItem, CatalogItemSchema } from '../catalog/schemas/catalog-item.schema';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([
+      { name: Product.name, schema: ProductSchema },
+      { name: Vendor.name, schema: VendorSchema },
+      { name: CatalogItem.name, schema: CatalogItemSchema },
+    ]),
+  ],
+  controllers: [SearchController],
+  providers: [SearchService],
+  exports: [SearchService],
+})
+export class SearchModule {}
+import { Injectable } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, PipelineStage, Types } from 'mongoose';
+import { Product } from '../products/schemas/product.schema';
+import { Vendor } from '../vendors/schemas/vendor.schema';
+import { CatalogItem } from '../catalog/schemas/catalog-item.schema';
+import {
+  SearchDto,
+  ProductSearchDto,
+  ShopSearchDto,
+  SearchType,
+  SortBy,
+} from './dto/search.dto';
+import {
+  SearchResults,
+  ProductSearchResult,
+  ShopSearchResult,
+  ProductWithVendors,
+  VendorListing,
+} from './dto/search-result.dto';
+import { ProductStatus } from '../common/enums/product-status.enum';
+
+@Injectable()
+export class SearchService {
+  constructor(
+    @InjectModel(Product.name) private productModel: Model<Product>,
+    @InjectModel(Vendor.name) private vendorModel: Model<Vendor>,
+    @InjectModel(CatalogItem.name) private catalogModel: Model<CatalogItem>,
+  ) {}
+
+  async search(dto: SearchDto): Promise<SearchResults> {
+    const startTime = Date.now();
+
+    const searchType = dto.searchType || SearchType.ALL;
+
+    const results: SearchResults = {
+      query: dto.query,
+      searchType: searchType.toString(),
+      availableFilters: {
+        states: [],
+        areas: [],
+        markets: [],
+        categories: [],
+        brands: [],
+        priceRange: { min: 0, max: 0 },
+      },
+      meta: {
+        timestamp: new Date().toISOString(),
+        took: 0,
+      },
+    };
+
+    try {
+      switch (searchType) {
+        case SearchType.PRODUCTS:
+          results.products = await this.searchProducts(dto);
+          results.productComparison = await this.getProductComparison(dto);
+          break;
+        case SearchType.SHOPS:
+          results.shops = await this.searchShops(dto);
+          break;
+        case SearchType.ALL:
+        default:
+          const [products, shops, productComparison] = await Promise.all([
+            this.searchProducts(dto),
+            this.searchShops(dto),
+            this.getProductComparison(dto),
+          ]);
+          results.products = products;
+          results.shops = shops;
+          results.productComparison = productComparison;
+          break;
+      }
+
+      results.availableFilters = await this.getAvailableFilters(dto);
+    } catch (error) {
+      console.error('Search error:', error.message, error.stack);
+      throw error;
+    }
+
+    results.meta.took = Date.now() - startTime;
+    return results;
+  }
+
+  async searchProducts(dto: SearchDto): Promise<{
+    items: ProductSearchResult[];
+    total: number;
+    page: number;
+    totalPages: number;
+  }> {
+    const { page = 1, limit = 20 } = dto;
+    const skip = (page - 1) * limit;
+
+    const pipeline: PipelineStage[] = [];
+    const isGeoSearch = !!(dto.longitude && dto.latitude);
+
+    // $geoNear MUST be the first stage in the pipeline if doing geo search
+    if (isGeoSearch) {
+      pipeline.push({
+        $geoNear: {
+          near: {
+            type: 'Point',
+            coordinates: [dto.longitude!, dto.latitude!],
+          },
+          distanceField: 'distance',
+          maxDistance: (dto.maxDistance || 10) * 1000,
+          spherical: true,
+          query: {
+            isActive: true,
+            status: ProductStatus.APPROVED,
+          },
+        },
+      });
+    }
+
+    // Build match stage
+    const matchStage: Record<string, any> = {};
+
+    // Only add isActive and status if NOT already in $geoNear query
+    if (!isGeoSearch) {
+      matchStage.isActive = true;
+      matchStage.status = ProductStatus.APPROVED;
+    }
+
+    // Text search - use regex fallback when combining with $geoNear
+    const usedTextSearch = !!(dto.query && !isGeoSearch);
+    if (dto.query) {
+      if (isGeoSearch) {
+        // Fallback to regex when combining with $geoNear
+        matchStage.$or = [
+          { name: { $regex: dto.query, $options: 'i' } },
+          { description: { $regex: dto.query, $options: 'i' } },
+          { brand: { $regex: dto.query, $options: 'i' } },
+          { tags: { $in: [new RegExp(dto.query, 'i')] } },
+        ];
+      } else {
+        // Use $text for non-geo searches (better relevance)
+        matchStage.$text = { $search: dto.query };
+      }
+    }
+
+    // Location filters
+    if (dto.stateId) matchStage.stateId = new Types.ObjectId(dto.stateId);
+    if (dto.areaId) matchStage.areaId = new Types.ObjectId(dto.areaId);
+    if (dto.marketId) matchStage.marketId = new Types.ObjectId(dto.marketId);
+
+    // Category filters
+    if (dto.category) matchStage.category = dto.category;
+    if (dto.subcategory) matchStage.subcategory = dto.subcategory;
+    if (dto.brand) matchStage.brand = { $regex: dto.brand, $options: 'i' };
+
+    // Price filters
+    if (dto.minPrice !== undefined || dto.maxPrice !== undefined) {
+      matchStage.price = {};
+      if (dto.minPrice !== undefined) matchStage.price.$gte = dto.minPrice;
+      if (dto.maxPrice !== undefined) matchStage.price.$lte = dto.maxPrice;
+    }
+
+    // Stock filter
+    if (dto.inStock !== undefined) {
+      matchStage.inStock = dto.inStock;
+    }
+
+    // Only add $match if there are conditions
+    if (Object.keys(matchStage).length > 0) {
+      pipeline.push({ $match: matchStage });
+    }
+
+    // Lookup vendor
+    pipeline.push({
+      $lookup: {
+        from: 'vendors',
+        localField: 'vendorId',
+        foreignField: '_id',
+        as: 'vendor',
+      },
+    });
+    pipeline.push({ $unwind: '$vendor' });
+
+    // Filter by verified vendors if requested
+    if (dto.verifiedOnly) {
+      pipeline.push({ $match: { 'vendor.isVerified': true } });
+    }
+
+    // Lookup state
+    pipeline.push({
+      $lookup: {
+        from: 'states',
+        localField: 'stateId',
+        foreignField: '_id',
+        as: 'state',
+      },
+    });
+    pipeline.push({
+      $unwind: { path: '$state', preserveNullAndEmptyArrays: true },
+    });
+
+    // Lookup area
+    pipeline.push({
+      $lookup: {
+        from: 'areas',
+        localField: 'areaId',
+        foreignField: '_id',
+        as: 'area',
+      },
+    });
+    pipeline.push({
+      $unwind: { path: '$area', preserveNullAndEmptyArrays: true },
+    });
+
+    // Lookup market
+    pipeline.push({
+      $lookup: {
+        from: 'markets',
+        localField: 'marketId',
+        foreignField: '_id',
+        as: 'market',
+      },
+    });
+    pipeline.push({
+      $unwind: { path: '$market', preserveNullAndEmptyArrays: true },
+    });
+
+    // Add text score only if $text was used
+    if (usedTextSearch) {
+      pipeline.push({
+        $addFields: {
+          textScore: { $meta: 'textScore' },
+        },
+      });
+    }
+
+    // Sort
+    const sortStage: any = {};
+    switch (dto.sortBy) {
+      case SortBy.PRICE_LOW:
+        sortStage.price = 1;
+        break;
+      case SortBy.PRICE_HIGH:
+        sortStage.price = -1;
+        break;
+      case SortBy.DISTANCE:
+        if (isGeoSearch) sortStage.distance = 1;
+        else sortStage.createdAt = -1;
+        break;
+      case SortBy.RATING:
+        sortStage['vendor.rating'] = -1;
+        break;
+      case SortBy.NEWEST:
+        sortStage.createdAt = -1;
+        break;
+      case SortBy.POPULARITY:
+        sortStage.views = -1;
+        break;
+      case SortBy.RELEVANCE:
+      default:
+        if (usedTextSearch) {
+          sortStage.textScore = -1;
+        } else if (isGeoSearch) {
+          sortStage.distance = 1;
+        }
+        sortStage.createdAt = -1;
+        break;
+    }
+    pipeline.push({ $sort: sortStage });
+
+    // Count total before pagination
+    const countPipeline = [...pipeline, { $count: 'total' }];
+    const countResult = await this.productModel.aggregate(countPipeline);
+    const total = countResult[0]?.total || 0;
+
+    // Pagination
+    pipeline.push({ $skip: skip });
+    pipeline.push({ $limit: limit });
+
+    // Project final shape
+    pipeline.push({
+      $project: {
+        id: '$_id',
+        name: 1,
+        description: 1,
+        brand: 1,
+        category: 1,
+        subcategory: 1,
+        images: 1,
+        price: 1,
+        originalPrice: 1,
+        currency: 1,
+        inStock: 1,
+        distance: isGeoSearch ? 1 : '$$REMOVE',
+        vendor: {
+          id: '$vendor._id',
+          businessName: '$vendor.businessName',
+          logo: '$vendor.shopImages.logo',
+          rating: '$vendor.rating',
+          isVerified: '$vendor.isVerified',
+          contactDetails: {
+            phone: '$vendor.contactDetails.phone',
+            whatsapp: '$vendor.contactDetails.whatsapp',
+          },
+        },
+        location: {
+          state: { id: '$state._id', name: '$state.name' },
+          area: { id: '$area._id', name: '$area.name' },
+          market: {
+            id: '$market._id',
+            name: '$market.name',
+            type: '$market.type',
+          },
+          shopNumber: '$vendor.shopNumber',
+          shopAddress: '$vendor.shopAddress',
+          coordinates: '$location.coordinates',
+        },
+      },
+    });
+
+    const products = await this.productModel.aggregate(pipeline);
+
+    // Update search appearances
+    if (products.length > 0) {
+      const productIds = products.map((p) => p.id);
+      await this.productModel.updateMany(
+        { _id: { $in: productIds } },
+        { $inc: { searchAppearances: 1 } },
+      );
+    }
+
+    return {
+      items: products as ProductSearchResult[],
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async getProductComparison(dto: SearchDto): Promise<{
+    items: ProductWithVendors[];
+    total: number;
+  }> {
+    const pipeline: PipelineStage[] = [];
+
+    const matchStage: Record<string, any> = {
+      isActive: true,
+      status: ProductStatus.APPROVED,
+    };
+
+    // Use regex only - $text cannot be inside $or
+    if (dto.query) {
+      matchStage.$or = [
+        { name: { $regex: dto.query, $options: 'i' } },
+        { description: { $regex: dto.query, $options: 'i' } },
+        { brand: { $regex: dto.query, $options: 'i' } },
+        { tags: { $in: [new RegExp(dto.query, 'i')] } },
+      ];
+    }
+
+    if (dto.stateId) matchStage.stateId = new Types.ObjectId(dto.stateId);
+    if (dto.areaId) matchStage.areaId = new Types.ObjectId(dto.areaId);
+    if (dto.marketId) matchStage.marketId = new Types.ObjectId(dto.marketId);
+    if (dto.category) matchStage.category = dto.category;
+
+    pipeline.push({ $match: matchStage });
+
+    // Lookup vendor details
+    pipeline.push({
+      $lookup: {
+        from: 'vendors',
+        localField: 'vendorId',
+        foreignField: '_id',
+        as: 'vendor',
+      },
+    });
+    pipeline.push({ $unwind: '$vendor' });
+
+    // Lookup location details
+    pipeline.push({
+      $lookup: {
+        from: 'states',
+        localField: 'stateId',
+        foreignField: '_id',
+        as: 'state',
+      },
+    });
+    pipeline.push({
+      $unwind: { path: '$state', preserveNullAndEmptyArrays: true },
+    });
+
+    pipeline.push({
+      $lookup: {
+        from: 'areas',
+        localField: 'areaId',
+        foreignField: '_id',
+        as: 'area',
+      },
+    });
+    pipeline.push({
+      $unwind: { path: '$area', preserveNullAndEmptyArrays: true },
+    });
+
+    pipeline.push({
+      $lookup: {
+        from: 'markets',
+        localField: 'marketId',
+        foreignField: '_id',
+        as: 'market',
+      },
+    });
+    pipeline.push({
+      $unwind: { path: '$market', preserveNullAndEmptyArrays: true },
+    });
+
+    // Group by product name (or sku/barcode if available)
+    pipeline.push({
+      $group: {
+        _id: {
+          $cond: [
+            { $and: [{ $ne: ['$sku', null] }, { $ne: ['$sku', ''] }] },
+            '$sku',
+            { $toLower: '$name' },
+          ],
+        },
+        name: { $first: '$name' },
+        description: { $first: '$description' },
+        brand: { $first: '$brand' },
+        category: { $first: '$category' },
+        subcategory: { $first: '$subcategory' },
+        images: { $first: '$images' },
+        catalogItemId: { $first: '$catalogItemId' },
+        lowestPrice: { $min: '$price' },
+        highestPrice: { $max: '$price' },
+        averagePrice: { $avg: '$price' },
+        totalVendors: { $sum: 1 },
+        vendors: {
+          $push: {
+            vendorId: '$vendor._id',
+            productId: '$_id',
+            businessName: '$vendor.businessName',
+            logo: '$vendor.shopImages.logo',
+            entrancePhoto: '$vendor.shopImages.entrancePhoto',
+            rating: '$vendor.rating',
+            isVerified: '$vendor.isVerified',
+            price: '$price',
+            originalPrice: '$originalPrice',
+            inStock: '$inStock',
+            quantity: '$quantity',
+            contactDetails: '$vendor.contactDetails',
+            bankDetails: '$vendor.bankDetails',
+            location: {
+              state: { id: '$state._id', name: '$state.name' },
+              area: { id: '$area._id', name: '$area.name' },
+              market: {
+                id: '$market._id',
+                name: '$market.name',
+                type: '$market.type',
+              },
+              shopNumber: '$vendor.shopNumber',
+              shopFloor: '$vendor.shopFloor',
+              shopBlock: '$vendor.shopBlock',
+              shopAddress: '$vendor.shopAddress',
+              landmark: '$vendor.landmark',
+              coordinates: '$vendor.location.coordinates',
+            },
+            operatingHours: {
+              openingTime: '$vendor.operatingHours.openingTime',
+              closingTime: '$vendor.operatingHours.closingTime',
+              operatingDays: '$vendor.operatingHours.operatingDays',
+              isOpen: '$vendor.isOpen',
+            },
+          },
+        },
+      },
+    });
+
+    // Sort vendors within each product by price
+    pipeline.push({
+      $addFields: {
+        vendors: {
+          $sortArray: {
+            input: '$vendors',
+            sortBy: { price: 1 },
+          },
+        },
+      },
+    });
+
+    // Sort products by number of vendors (popularity)
+    pipeline.push({ $sort: { totalVendors: -1 } });
+
+    // Limit
+    pipeline.push({ $limit: 20 });
+
+    // Project final shape
+    pipeline.push({
+      $project: {
+        id: '$_id',
+        catalogItemId: 1,
+        name: 1,
+        description: 1,
+        brand: 1,
+        category: 1,
+        subcategory: 1,
+        images: 1,
+        priceRange: {
+          lowest: '$lowestPrice',
+          highest: '$highestPrice',
+          average: { $round: ['$averagePrice', 2] },
+          currency: 'NGN',
+        },
+        totalVendors: 1,
+        vendors: 1,
+      },
+    });
+
+    try {
+      const results = await this.productModel.aggregate(pipeline);
+      return {
+        items: results as ProductWithVendors[],
+        total: results.length,
+      };
+    } catch (error) {
+      console.error('Product comparison error:', error.message);
+      return {
+        items: [],
+        total: 0,
+      };
+    }
+  }
+
+  async searchShops(dto: ShopSearchDto): Promise<{
+    items: ShopSearchResult[];
+    total: number;
+    page: number;
+    totalPages: number;
+  }> {
+    const { page = 1, limit = 20 } = dto;
+    const skip = (page - 1) * limit;
+
+    const pipeline: PipelineStage[] = [];
+    const isGeoSearch = !!(dto.longitude && dto.latitude);
+
+    // $geoNear MUST be the first stage if doing geo search
+    if (isGeoSearch) {
+      pipeline.push({
+        $geoNear: {
+          near: {
+            type: 'Point',
+            coordinates: [dto.longitude!, dto.latitude!],
+          },
+          distanceField: 'distance',
+          maxDistance: (dto.maxDistance || 10) * 1000,
+          spherical: true,
+          query: { isActive: true },
+        },
+      });
+    }
+
+    const matchStage: Record<string, any> = {};
+
+    if (!isGeoSearch) {
+      matchStage.isActive = true;
+    }
+
+    // Text search using regex (safe for all cases)
+    if (dto.query) {
+      matchStage.$or = [
+        { businessName: { $regex: dto.query, $options: 'i' } },
+        { businessDescription: { $regex: dto.query, $options: 'i' } },
+        { categories: { $in: [new RegExp(dto.query, 'i')] } },
+        { tags: { $in: [new RegExp(dto.query, 'i')] } },
+      ];
+    }
+
+    // Location filters
+    if (dto.stateId) matchStage.stateId = new Types.ObjectId(dto.stateId);
+    if (dto.areaId) matchStage.areaId = new Types.ObjectId(dto.areaId);
+    if (dto.marketId) matchStage.marketId = new Types.ObjectId(dto.marketId);
+
+    // Vendor type
+    if (dto.vendorType) matchStage.vendorType = dto.vendorType;
+
+    // Verified only
+    if (dto.verifiedOnly) matchStage.isVerified = true;
+
+    // Is open
+    if (dto.isOpen !== undefined) matchStage.isOpen = dto.isOpen;
+
+    // Category filter
+    if (dto.category) {
+      matchStage.categories = { $in: [dto.category] };
+    }
+
+    // Only add $match if there are conditions
+    if (Object.keys(matchStage).length > 0) {
+      pipeline.push({ $match: matchStage });
+    }
+
+    // Lookup state
+    pipeline.push({
+      $lookup: {
+        from: 'states',
+        localField: 'stateId',
+        foreignField: '_id',
+        as: 'state',
+      },
+    });
+    pipeline.push({
+      $unwind: { path: '$state', preserveNullAndEmptyArrays: true },
+    });
+
+    // Lookup area
+    pipeline.push({
+      $lookup: {
+        from: 'areas',
+        localField: 'areaId',
+        foreignField: '_id',
+        as: 'area',
+      },
+    });
+    pipeline.push({
+      $unwind: { path: '$area', preserveNullAndEmptyArrays: true },
+    });
+
+    // Lookup market
+    pipeline.push({
+      $lookup: {
+        from: 'markets',
+        localField: 'marketId',
+        foreignField: '_id',
+        as: 'market',
+      },
+    });
+    pipeline.push({
+      $unwind: { path: '$market', preserveNullAndEmptyArrays: true },
+    });
+
+    // Lookup featured products
+    pipeline.push({
+      $lookup: {
+        from: 'products',
+        let: { vendorId: '$_id' },
+        pipeline: [
+          {
+            $match: {
+              $expr: { $eq: ['$vendorId', '$$vendorId'] },
+              isActive: true,
+              status: ProductStatus.APPROVED,
+            },
+          },
+          { $sort: { views: -1 } },
+          { $limit: 4 },
+          {
+            $project: {
+              id: '$_id',
+              name: 1,
+              price: 1,
+              image: { $arrayElemAt: ['$images', 0] },
+            },
+          },
+        ],
+        as: 'featuredProducts',
+      },
+    });
+
+    // Sort
+    const sortStage: any = {};
+    switch (dto.sortBy) {
+      case SortBy.RATING:
+        sortStage.rating = -1;
+        break;
+      case SortBy.POPULARITY:
+        sortStage.totalViews = -1;
+        break;
+      case SortBy.NEWEST:
+        sortStage.createdAt = -1;
+        break;
+      case SortBy.DISTANCE:
+        if (isGeoSearch) sortStage.distance = 1;
+        else sortStage.createdAt = -1;
+        break;
+      default:
+        if (isGeoSearch) {
+          sortStage.distance = 1;
+        }
+        sortStage.isFeatured = -1;
+        sortStage.isVerified = -1;
+        sortStage.rating = -1;
+        break;
+    }
+    pipeline.push({ $sort: sortStage });
+
+    // Count total
+    const countPipeline = [...pipeline, { $count: 'total' }];
+    const countResult = await this.vendorModel.aggregate(countPipeline);
+    const total = countResult[0]?.total || 0;
+
+    // Pagination
+    pipeline.push({ $skip: skip });
+    pipeline.push({ $limit: limit });
+
+    // Project final shape
+    pipeline.push({
+      $project: {
+        id: '$_id',
+        businessName: 1,
+        businessDescription: 1,
+        vendorType: 1,
+        logo: '$shopImages.logo',
+        entrancePhoto: '$shopImages.entrancePhoto',
+        layoutMap: '$shopImages.layoutMap',
+        rating: 1,
+        reviewCount: 1,
+        totalProducts: 1,
+        isVerified: 1,
+        isFeatured: 1,
+        categories: 1,
+        distance: isGeoSearch ? 1 : '$$REMOVE',
+        priceRange: {
+          min: '$minProductPrice',
+          max: '$maxProductPrice',
+        },
+        contactDetails: {
+          phone: '$contactDetails.phone',
+          whatsapp: '$contactDetails.whatsapp',
+          email: '$contactDetails.email',
+          instagram: '$contactDetails.instagram',
+        },
+        bankDetails: 1,
+        location: {
+          state: { id: '$state._id', name: '$state.name' },
+          area: { id: '$area._id', name: '$area.name' },
+          market: {
+            id: '$market._id',
+            name: '$market.name',
+            type: '$market.type',
+          },
+          shopNumber: 1,
+          shopFloor: 1,
+          shopBlock: 1,
+          shopAddress: 1,
+          landmark: 1,
+          coordinates: '$location.coordinates',
+        },
+        operatingHours: {
+          openingTime: '$operatingHours.openingTime',
+          closingTime: '$operatingHours.closingTime',
+          operatingDays: '$operatingHours.operatingDays',
+          isOpen: 1,
+        },
+        featuredProducts: 1,
+      },
+    });
+
+    const shops = await this.vendorModel.aggregate(pipeline);
+
+    // Update search appearances
+    if (shops.length > 0) {
+      const vendorIds = shops.map((s) => s.id);
+      await this.vendorModel.updateMany(
+        { _id: { $in: vendorIds } },
+        { $inc: { searchAppearances: 1 } },
+      );
+    }
+
+    return {
+      items: shops as ShopSearchResult[],
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async getAvailableFilters(dto: SearchDto): Promise<{
+    states: { id: string; name: string; count: number }[];
+    areas: { id: string; name: string; count: number }[];
+    markets: { id: string; name: string; count: number }[];
+    categories: { name: string; count: number }[];
+    brands: { name: string; count: number }[];
+    priceRange: { min: number; max: number };
+  }> {
+    const matchStage: Record<string, any> = {
+      isActive: true,
+      status: ProductStatus.APPROVED,
+    };
+
+    // Use regex instead of $text for filter aggregation
+    if (dto.query) {
+      matchStage.$or = [
+        { name: { $regex: dto.query, $options: 'i' } },
+        { description: { $regex: dto.query, $options: 'i' } },
+        { brand: { $regex: dto.query, $options: 'i' } },
+        { tags: { $in: [new RegExp(dto.query, 'i')] } },
+      ];
+    }
+
+    try {
+      // States
+      const statesAgg = await this.productModel.aggregate([
+        { $match: matchStage },
+        {
+          $lookup: {
+            from: 'states',
+            localField: 'stateId',
+            foreignField: '_id',
+            as: 'state',
+          },
+        },
+        { $unwind: '$state' },
+        {
+          $group: {
+            _id: '$state._id',
+            name: { $first: '$state.name' },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { count: -1 } },
+        { $limit: 20 },
+        {
+          $project: {
+            id: '$_id',
+            name: 1,
+            count: 1,
+            _id: 0,
+          },
+        },
+      ]);
+
+      // Areas (filtered by state if provided)
+      const areasMatch = { ...matchStage };
+      if (dto.stateId) areasMatch.stateId = new Types.ObjectId(dto.stateId);
+
+      const areasAgg = await this.productModel.aggregate([
+        { $match: areasMatch },
+        {
+          $lookup: {
+            from: 'areas',
+            localField: 'areaId',
+            foreignField: '_id',
+            as: 'area',
+          },
+        },
+        { $unwind: '$area' },
+        {
+          $group: {
+            _id: '$area._id',
+            name: { $first: '$area.name' },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { count: -1 } },
+        { $limit: 20 },
+        {
+          $project: {
+            id: '$_id',
+            name: 1,
+            count: 1,
+            _id: 0,
+          },
+        },
+      ]);
+
+      // Markets (filtered by area if provided)
+      const marketsMatch = { ...matchStage };
+      if (dto.stateId)
+        marketsMatch.stateId = new Types.ObjectId(dto.stateId);
+      if (dto.areaId) marketsMatch.areaId = new Types.ObjectId(dto.areaId);
+
+      const marketsAgg = await this.productModel.aggregate([
+        {
+          $match: {
+            ...marketsMatch,
+            marketId: { $exists: true, $ne: null },
+          },
+        },
+        {
+          $lookup: {
+            from: 'markets',
+            localField: 'marketId',
+            foreignField: '_id',
+            as: 'market',
+          },
+        },
+        { $unwind: '$market' },
+        {
+          $group: {
+            _id: '$market._id',
+            name: { $first: '$market.name' },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { count: -1 } },
+        { $limit: 20 },
+        {
+          $project: {
+            id: '$_id',
+            name: 1,
+            count: 1,
+            _id: 0,
+          },
+        },
+      ]);
+
+      // Categories
+      const categoriesAgg = await this.productModel.aggregate([
+        { $match: matchStage },
+        {
+          $group: {
+            _id: '$category',
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { count: -1 } },
+        { $limit: 20 },
+        {
+          $project: {
+            name: '$_id',
+            count: 1,
+            _id: 0,
+          },
+        },
+      ]);
+
+      // Brands
+      const brandsAgg = await this.productModel.aggregate([
+        {
+          $match: {
+            ...matchStage,
+            brand: { $exists: true, $nin: [null, ''] }
+          },
+        },
+        {
+          $group: {
+            _id: '$brand',
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { count: -1 } },
+        { $limit: 20 },
+        {
+          $project: {
+            name: '$_id',
+            count: 1,
+            _id: 0,
+          },
+        },
+      ]);
+
+      // Price range
+      const priceAgg = await this.productModel.aggregate([
+        { $match: matchStage },
+        {
+          $group: {
+            _id: null,
+            min: { $min: '$price' },
+            max: { $max: '$price' },
+          },
+        },
+      ]);
+
+      return {
+        states: statesAgg,
+        areas: areasAgg,
+        markets: marketsAgg,
+        categories: categoriesAgg,
+        brands: brandsAgg,
+        priceRange: priceAgg[0]
+          ? { min: priceAgg[0].min, max: priceAgg[0].max }
+          : { min: 0, max: 0 },
+      };
+    } catch (error) {
+      console.error('Filter aggregation error:', error.message);
+      return {
+        states: [],
+        areas: [],
+        markets: [],
+        categories: [],
+        brands: [],
+        priceRange: { min: 0, max: 0 },
+      };
+    }
+  }
+
+  async getProductVendors(
+    productName: string,
+    filters: SearchDto,
+  ): Promise<ProductWithVendors> {
+    const pipeline: PipelineStage[] = [];
+
+    const matchStage: Record<string, any> = {
+      isActive: true,
+      status: ProductStatus.APPROVED,
+      $or: [
+        { name: { $regex: productName, $options: 'i' } },
+        { sku: productName },
+        { barcode: productName },
+      ],
+    };
+
+    if (filters.stateId)
+      matchStage.stateId = new Types.ObjectId(filters.stateId);
+    if (filters.areaId)
+      matchStage.areaId = new Types.ObjectId(filters.areaId);
+    if (filters.marketId)
+      matchStage.marketId = new Types.ObjectId(filters.marketId);
+    if (filters.minPrice !== undefined) {
+      matchStage.price = {
+        ...(matchStage.price || {}),
+        $gte: filters.minPrice,
+      };
+    }
+    if (filters.maxPrice !== undefined) {
+      matchStage.price = {
+        ...(matchStage.price || {}),
+        $lte: filters.maxPrice,
+      };
+    }
+
+    pipeline.push({ $match: matchStage });
+
+    // Full vendor lookup with all details
+    pipeline.push({
+      $lookup: {
+        from: 'vendors',
+        localField: 'vendorId',
+        foreignField: '_id',
+        as: 'vendor',
+      },
+    });
+    pipeline.push({ $unwind: '$vendor' });
+
+    // Location lookups
+    pipeline.push({
+      $lookup: {
+        from: 'states',
+        localField: 'stateId',
+        foreignField: '_id',
+        as: 'state',
+      },
+    });
+    pipeline.push({
+      $unwind: { path: '$state', preserveNullAndEmptyArrays: true },
+    });
+
+    pipeline.push({
+      $lookup: {
+        from: 'areas',
+        localField: 'areaId',
+        foreignField: '_id',
+        as: 'area',
+      },
+    });
+    pipeline.push({
+      $unwind: { path: '$area', preserveNullAndEmptyArrays: true },
+    });
+
+    pipeline.push({
+      $lookup: {
+        from: 'markets',
+        localField: 'marketId',
+        foreignField: '_id',
+        as: 'market',
+      },
+    });
+    pipeline.push({
+      $unwind: { path: '$market', preserveNullAndEmptyArrays: true },
+    });
+
+    // Group to get all vendors
+    pipeline.push({
+      $group: {
+        _id: { $toLower: '$name' },
+        name: { $first: '$name' },
+        description: { $first: '$description' },
+        brand: { $first: '$brand' },
+        category: { $first: '$category' },
+        subcategory: { $first: '$subcategory' },
+        images: { $first: '$images' },
+        catalogItemId: { $first: '$catalogItemId' },
+        lowestPrice: { $min: '$price' },
+        highestPrice: { $max: '$price' },
+        averagePrice: { $avg: '$price' },
+        totalVendors: { $sum: 1 },
+        vendors: {
+          $push: {
+            vendorId: '$vendor._id',
+            productId: '$_id',
+            businessName: '$vendor.businessName',
+            logo: '$vendor.shopImages.logo',
+            entrancePhoto: '$vendor.shopImages.entrancePhoto',
+            rating: '$vendor.rating',
+            isVerified: '$vendor.isVerified',
+            price: '$price',
+            originalPrice: '$originalPrice',
+            inStock: '$inStock',
+            quantity: '$quantity',
+            contactDetails: '$vendor.contactDetails',
+            bankDetails: '$vendor.bankDetails',
+            location: {
+              state: { id: '$state._id', name: '$state.name' },
+              area: { id: '$area._id', name: '$area.name' },
+              market: {
+                id: '$market._id',
+                name: '$market.name',
+                type: '$market.type',
+              },
+              shopNumber: '$vendor.shopNumber',
+              shopFloor: '$vendor.shopFloor',
+              shopBlock: '$vendor.shopBlock',
+              shopAddress: '$vendor.shopAddress',
+              landmark: '$vendor.landmark',
+              coordinates: '$vendor.location.coordinates',
+            },
+            operatingHours: {
+              openingTime: '$vendor.operatingHours.openingTime',
+              closingTime: '$vendor.operatingHours.closingTime',
+              operatingDays: '$vendor.operatingHours.operatingDays',
+              isOpen: '$vendor.isOpen',
+            },
+          },
+        },
+      },
+    });
+
+    // Sort vendors by price
+    pipeline.push({
+      $addFields: {
+        vendors: {
+          $sortArray: {
+            input: '$vendors',
+            sortBy: { price: 1 },
+          },
+        },
+      },
+    });
+
+    pipeline.push({
+      $project: {
+        id: '$_id',
+        catalogItemId: 1,
+        name: 1,
+        description: 1,
+        brand: 1,
+        category: 1,
+        subcategory: 1,
+        images: 1,
+        priceRange: {
+          lowest: '$lowestPrice',
+          highest: '$highestPrice',
+          average: { $round: ['$averagePrice', 2] },
+          currency: 'NGN',
+        },
+        totalVendors: 1,
+        vendors: 1,
+      },
+    });
+
+    const result = await this.productModel.aggregate(pipeline);
+    return result[0] as ProductWithVendors;
+  }
+
+  async getShopProducts(
+    vendorId: string,
+    filters: {
+      category?: string;
+      minPrice?: number;
+      maxPrice?: number;
+      page?: number;
+      limit?: number;
+    },
+  ): Promise<{
+    shop: ShopSearchResult;
+    products: ProductSearchResult[];
+    total: number;
+    page: number;
+    totalPages: number;
+  }> {
+    const { page = 1, limit = 20 } = filters;
+    const skip = (page - 1) * limit;
+
+    // Get shop details
+    const shopPipeline: PipelineStage[] = [
+      { $match: { _id: new Types.ObjectId(vendorId) } },
+      {
+        $lookup: {
+          from: 'states',
+          localField: 'stateId',
+          foreignField: '_id',
+          as: 'state',
+        },
+      },
+      {
+        $unwind: { path: '$state', preserveNullAndEmptyArrays: true },
+      },
+      {
+        $lookup: {
+          from: 'areas',
+          localField: 'areaId',
+          foreignField: '_id',
+          as: 'area',
+        },
+      },
+      {
+        $unwind: { path: '$area', preserveNullAndEmptyArrays: true },
+      },
+      {
+        $lookup: {
+          from: 'markets',
+          localField: 'marketId',
+          foreignField: '_id',
+          as: 'market',
+        },
+      },
+      {
+        $unwind: { path: '$market', preserveNullAndEmptyArrays: true },
+      },
+    ];
+
+    const shopResult = await this.vendorModel.aggregate(shopPipeline);
+    const shop = shopResult[0];
+
+    if (!shop) {
+      return {
+        shop: null as any,
+        products: [],
+        total: 0,
+        page,
+        totalPages: 0,
+      };
+    }
+
+    // Get products
+    const productMatch: Record<string, any> = {
+      vendorId: new Types.ObjectId(vendorId),
+      isActive: true,
+      status: ProductStatus.APPROVED,
+    };
+
+    if (filters.category) productMatch.category = filters.category;
+    if (filters.minPrice !== undefined || filters.maxPrice !== undefined) {
+      productMatch.price = {};
+      if (filters.minPrice !== undefined)
+        productMatch.price.$gte = filters.minPrice;
+      if (filters.maxPrice !== undefined)
+        productMatch.price.$lte = filters.maxPrice;
+    }
+
+    const [products, total] = await Promise.all([
+      this.productModel
+        .find(productMatch)
+        .skip(skip)
+        .limit(limit)
+        .sort({ createdAt: -1 }),
+      this.productModel.countDocuments(productMatch),
+    ]);
+
+    return {
+      shop: shop as ShopSearchResult,
+      products: products.map((p) => ({
+        id: p._id.toString(),
+        name: p.name,
+        description: p.description,
+        brand: p.brand,
+        category: p.category,
+        subcategory: p.subcategory,
+        images: p.images || [],
+        price: p.price,
+        originalPrice: p.originalPrice,
+        currency: p.currency,
+        inStock: p.inStock,
+        vendor: {
+          id: shop._id.toString(),
+          businessName: shop.businessName,
+          logo: shop.shopImages?.logo,
+          rating: shop.rating,
+          isVerified: shop.isVerified,
+          contactDetails: {
+            phone: shop.contactDetails?.phone,
+            whatsapp: shop.contactDetails?.whatsapp,
+          },
+        },
+        location: {
+          state: {
+            id: shop.state?._id?.toString(),
+            name: shop.state?.name,
+          },
+          area: { id: shop.area?._id?.toString(), name: shop.area?.name },
+          market: {
+            id: shop.market?._id?.toString(),
+            name: shop.market?.name,
+            type: shop.market?.type,
+          },
+          shopNumber: shop.shopNumber,
+          shopAddress: shop.shopAddress,
+        },
+      })) as ProductSearchResult[],
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async getSimilarProducts(
+    productId: string,
+    limit: number = 10,
+  ): Promise<ProductSearchResult[]> {
+    try {
+      const product = await this.productModel.findById(productId);
+      if (!product) return [];
+
+      const pipeline: PipelineStage[] = [
+        {
+          $match: {
+            _id: { $ne: product._id },
+            category: product.category,
+            isActive: true,
+            status: ProductStatus.APPROVED,
+          },
+        },
+        {
+          $lookup: {
+            from: 'vendors',
+            localField: 'vendorId',
+            foreignField: '_id',
+            as: 'vendor',
+          },
+        },
+        { $unwind: '$vendor' },
+        {
+          $lookup: {
+            from: 'states',
+            localField: 'stateId',
+            foreignField: '_id',
+            as: 'state',
+          },
+        },
+        {
+          $unwind: { path: '$state', preserveNullAndEmptyArrays: true },
+        },
+        {
+          $lookup: {
+            from: 'areas',
+            localField: 'areaId',
+            foreignField: '_id',
+            as: 'area',
+          },
+        },
+        {
+          $unwind: { path: '$area', preserveNullAndEmptyArrays: true },
+        },
+        { $sample: { size: limit } },
+        {
+          $project: {
+            id: '$_id',
+            name: 1,
+            description: 1,
+            brand: 1,
+            category: 1,
+            subcategory: 1,
+            images: 1,
+            price: 1,
+            originalPrice: 1,
+            currency: 1,
+            inStock: 1,
+            vendor: {
+              id: '$vendor._id',
+              businessName: '$vendor.businessName',
+              logo: '$vendor.shopImages.logo',
+              rating: '$vendor.rating',
+              isVerified: '$vendor.isVerified',
+              contactDetails: {
+                phone: '$vendor.contactDetails.phone',
+                whatsapp: '$vendor.contactDetails.whatsapp',
+              },
+            },
+            location: {
+              state: { id: '$state._id', name: '$state.name' },
+              area: { id: '$area._id', name: '$area.name' },
+            },
+          },
+        },
+      ];
+
+      return this.productModel.aggregate(pipeline);
+    } catch (error) {
+      console.error('Similar products error:', error.message);
+      return [];
+    }
+  }
+}
+import { IsString, IsOptional, IsArray, IsNumber, IsBoolean } from 'class-validator';
+
+export class CreateStateDto {
+  @IsString()
+  name: string;
+
+  @IsString()
+  code: string;
+
+  @IsString()
+  @IsOptional()
+  capital?: string;
+
+  @IsArray()
+  @IsNumber({}, { each: true })
+  @IsOptional()
+  coordinates?: [number, number];
+
+  @IsBoolean()
+  @IsOptional()
+  isActive?: boolean;
+}
+import { IsString, IsOptional, IsArray, IsNumber, IsBoolean } from 'class-validator';
+
+export class UpdateStateDto {
+  @IsString()
+  @IsOptional()
+  name?: string;
+
+  @IsString()
+  @IsOptional()
+  code?: string;
+
+  @IsString()
+  @IsOptional()
+  capital?: string;
+
+  @IsArray()
+  @IsNumber({}, { each: true })
+  @IsOptional()
+  coordinates?: [number, number];
+
+  @IsBoolean()
+  @IsOptional()
+  isActive?: boolean;
+}
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document } from 'mongoose';
+
+@Schema({ timestamps: true })
+export class State extends Document {
+  @Prop({ required: true, unique: true })
+  name: string;
+
+  @Prop({ required: true, unique: true })
+  code: string;
+
+  @Prop()
+  capital?: string;
+
+  @Prop({ default: 'Nigeria' })
+  country: string;
+
+  @Prop({ type: { type: String, enum: ['Point'], default: 'Point' }, coordinates: [Number] })
+  location?: {
+    type: 'Point';
+    coordinates: [number, number];
+  };
+
+  @Prop({ default: true })
+  isActive: boolean;
+}
+
+export const StateSchema = SchemaFactory.createForClass(State);
+
+StateSchema.index({ location: '2dsphere' });
+StateSchema.index({ name: 1 });
+StateSchema.index({ code: 1 });
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  UseGuards,
+} from '@nestjs/common';
+import { StatesService } from './states.service';
+import { CreateStateDto } from './dto/create-state.dto';
+import { UpdateStateDto } from './dto/update-state.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { Role } from '../common/enums/role.enum';
+
+@Controller('states')
+export class StatesController {
+  constructor(private statesService: StatesService) {}
+
+  @Get()
+  findAll() {
+    return this.statesService.findAll();
+  }
+
+  @Get('seed')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  seedStates() {
+    return this.statesService.seedNigerianStates();
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string) {
+    return this.statesService.findById(id);
+  }
+
+  @Get('code/:code')
+  findByCode(@Param('code') code: string) {
+    return this.statesService.findByCode(code);
+  }
+
+  @Post()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  create(@Body() dto: CreateStateDto) {
+    return this.statesService.create(dto);
+  }
+
+  @Put(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  update(@Param('id') id: string, @Body() dto: UpdateStateDto) {
+    return this.statesService.update(id, dto);
+  }
+
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SUPER_ADMIN)
+  delete(@Param('id') id: string) {
+    return this.statesService.delete(id);
+  }
+}
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { StatesService } from './states.service';
+import { StatesController } from './states.controller';
+import { State, StateSchema } from './schemas/state.schema';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([{ name: State.name, schema: StateSchema }]),
+  ],
+  controllers: [StatesController],
+  providers: [StatesService],
+  exports: [StatesService],
+})
+export class StatesModule {}
+import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { State } from './schemas/state.schema';
+import { CreateStateDto } from './dto/create-state.dto';
+import { UpdateStateDto } from './dto/update-state.dto';
+
+@Injectable()
+export class StatesService {
+  constructor(@InjectModel(State.name) private stateModel: Model<State>) {}
+
+  async create(dto: CreateStateDto): Promise<State> {
+    const exists = await this.stateModel.findOne({
+      $or: [{ name: dto.name }, { code: dto.code }],
+    });
+    if (exists) {
+      throw new ConflictException('State already exists');
+    }
+
+    const stateData: any = { ...dto };
+    if (dto.coordinates) {
+      stateData.location = {
+        type: 'Point',
+        coordinates: dto.coordinates,
+      };
+    }
+    delete stateData.coordinates;
+
+    return this.stateModel.create(stateData);
+  }
+
+  async findAll(): Promise<State[]> {
+    return this.stateModel.find({ isActive: true }).sort({ name: 1 });
+  }
+
+  async findById(id: string): Promise<State> {
+    const state = await this.stateModel.findById(id);
+    if (!state) {
+      throw new NotFoundException('State not found');
+    }
+    return state;
+  }
+
+  async findByCode(code: string): Promise<State> {
+    const state = await this.stateModel.findOne({ code: code.toUpperCase() });
+    if (!state) {
+      throw new NotFoundException('State not found');
+    }
+    return state;
+  }
+
+  async update(id: string, dto: UpdateStateDto): Promise<State> {
+    const updateData: any = { ...dto };
+    if (dto.coordinates) {
+      updateData.location = {
+        type: 'Point',
+        coordinates: dto.coordinates,
+      };
+    }
+    delete updateData.coordinates;
+
+    const state = await this.stateModel.findByIdAndUpdate(id, updateData, {
+      new: true,
+    });
+    if (!state) {
+      throw new NotFoundException('State not found');
+    }
+    return state;
+  }
+
+  async delete(id: string): Promise<void> {
+    const result = await this.stateModel.deleteOne({ _id: id });
+    if (result.deletedCount === 0) {
+      throw new NotFoundException('State not found');
+    }
+  }
+
+  async seedNigerianStates(): Promise<State[]> {
+    const nigerianStates = [
+      { name: 'Abia', code: 'AB', capital: 'Umuahia' },
+      { name: 'Adamawa', code: 'AD', capital: 'Yola' },
+      { name: 'Akwa Ibom', code: 'AK', capital: 'Uyo' },
+      { name: 'Anambra', code: 'AN', capital: 'Awka' },
+      { name: 'Bauchi', code: 'BA', capital: 'Bauchi' },
+      { name: 'Bayelsa', code: 'BY', capital: 'Yenagoa' },
+      { name: 'Benue', code: 'BE', capital: 'Makurdi' },
+      { name: 'Borno', code: 'BO', capital: 'Maiduguri' },
+      { name: 'Cross River', code: 'CR', capital: 'Calabar' },
+      { name: 'Delta', code: 'DE', capital: 'Asaba' },
+      { name: 'Ebonyi', code: 'EB', capital: 'Abakaliki' },
+      { name: 'Edo', code: 'ED', capital: 'Benin City' },
+      { name: 'Ekiti', code: 'EK', capital: 'Ado-Ekiti' },
+      { name: 'Enugu', code: 'EN', capital: 'Enugu' },
+      { name: 'FCT', code: 'FC', capital: 'Abuja' },
+      { name: 'Gombe', code: 'GO', capital: 'Gombe' },
+      { name: 'Imo', code: 'IM', capital: 'Owerri' },
+      { name: 'Jigawa', code: 'JI', capital: 'Dutse' },
+      { name: 'Kaduna', code: 'KD', capital: 'Kaduna' },
+      { name: 'Kano', code: 'KN', capital: 'Kano' },
+      { name: 'Katsina', code: 'KT', capital: 'Katsina' },
+      { name: 'Kebbi', code: 'KE', capital: 'Birnin Kebbi' },
+      { name: 'Kogi', code: 'KO', capital: 'Lokoja' },
+      { name: 'Kwara', code: 'KW', capital: 'Ilorin' },
+      { name: 'Lagos', code: 'LA', capital: 'Ikeja' },
+      { name: 'Nasarawa', code: 'NA', capital: 'Lafia' },
+      { name: 'Niger', code: 'NI', capital: 'Minna' },
+      { name: 'Ogun', code: 'OG', capital: 'Abeokuta' },
+      { name: 'Ondo', code: 'ON', capital: 'Akure' },
+      { name: 'Osun', code: 'OS', capital: 'Osogbo' },
+      { name: 'Oyo', code: 'OY', capital: 'Ibadan' },
+      { name: 'Plateau', code: 'PL', capital: 'Jos' },
+      { name: 'Rivers', code: 'RI', capital: 'Port Harcourt' },
+      { name: 'Sokoto', code: 'SO', capital: 'Sokoto' },
+      { name: 'Taraba', code: 'TA', capital: 'Jalingo' },
+      { name: 'Yobe', code: 'YO', capital: 'Damaturu' },
+      { name: 'Zamfara', code: 'ZA', capital: 'Gusau' },
+    ];
+
+    const createdStates: State[] = [];
+    for (const stateData of nigerianStates) {
+      const exists = await this.stateModel.findOne({ code: stateData.code });
+      if (!exists) {
+        const state = await this.stateModel.create(stateData);
+        createdStates.push(state);
+      }
+    }
+    return createdStates;
+  }
+}
+import {
+  Controller,
+  Post,
+  UseGuards,
+  UseInterceptors,
+  UploadedFile,
+  UploadedFiles,
+  BadRequestException,
+  Param,
+  Delete,
+} from '@nestjs/common';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
+import { UploadService } from './upload.service';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+
+@Controller('upload')
+@UseGuards(JwtAuthGuard)
+export class UploadController {
+  constructor(private uploadService: UploadService) {}
+
+  @Post('image')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadImage(@UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('No file provided');
+    }
+    return this.uploadService.uploadImage(file);
+  }
+
+  @Post('images')
+  @UseInterceptors(FilesInterceptor('files', 10))
+  async uploadImages(@UploadedFiles() files: Express.Multer.File[]) {
+    if (!files || files.length === 0) {
+      throw new BadRequestException('No files provided');
+    }
+    return this.uploadService.uploadMultipleImages(files);
+  }
+
+  @Post('shop-entrance')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadShopEntrance(@UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('No file provided');
+    }
+    return this.uploadService.uploadShopEntrance(file);
+  }
+
+  @Post('shop-logo')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadShopLogo(@UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('No file provided');
+    }
+    return this.uploadService.uploadShopLogo(file);
+  }
+
+  @Post('market-layout')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadMarketLayout(@UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('No file provided');
+    }
+    return this.uploadService.uploadMarketLayout(file);
+  }
+
+  @Post('product')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadProductImage(@UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('No file provided');
+    }
+    return this.uploadService.uploadProductImage(file);
+  }
+
+  @Delete(':publicId')
+  async deleteImage(@Param('publicId') publicId: string) {
+    return this.uploadService.deleteImage(publicId);
+  }
+}
+import { Module } from '@nestjs/common';
+import { MulterModule } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { UploadController } from './upload.controller';
+import { UploadService } from './upload.service';
+
+@Module({
+  imports: [
+    MulterModule.register({
+      storage: memoryStorage(),
+      limits: {
+        fileSize: 10 * 1024 * 1024, // 10MB limit
+      },
+      fileFilter: (req, file, callback) => {
+        if (!file.mimetype.match(/\/(jpg|jpeg|png|gif|webp)$/)) {
+          return callback(new Error('Only image files are allowed!'), false);
+        }
+        callback(null, true);
+      },
+    }),
+  ],
+  controllers: [UploadController],
+  providers: [UploadService],
+  exports: [UploadService],
+})
+export class UploadModule {}
+import { Injectable, BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { v2 as cloudinary, UploadApiResponse, UploadApiErrorResponse } from 'cloudinary';
+import * as streamifier from 'streamifier';
+
+export interface CloudinaryResponse {
+  url: string;
+  publicId: string;
+  width?: number;
+  height?: number;
+  format?: string;
+}
+
+@Injectable()
+export class UploadService {
+  constructor(private configService: ConfigService) {
+    cloudinary.config({
+      cloud_name: this.configService.get<string>('CLOUDINARY_CLOUD_NAME'),
+      api_key: this.configService.get<string>('CLOUDINARY_API_KEY'),
+      api_secret: this.configService.get<string>('CLOUDINARY_API_SECRET'),
+    });
+  }
+
+  async uploadImage(
+    file: Express.Multer.File,
+    folder: string = 'sureshops',
+  ): Promise<CloudinaryResponse> {
+    return new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: folder,
+          resource_type: 'image',
+          transformation: [
+            { width: 1200, height: 1200, crop: 'limit' },
+            { quality: 'auto' },
+            { fetch_format: 'auto' },
+          ],
+        },
+        (error: UploadApiErrorResponse, result: UploadApiResponse) => {
+          if (error) {
+            reject(new BadRequestException('Failed to upload image'));
+          } else {
+            resolve({
+              url: result.secure_url,
+              publicId: result.public_id,
+              width: result.width,
+              height: result.height,
+              format: result.format,
+            });
+          }
+        },
+      );
+
+      streamifier.createReadStream(file.buffer).pipe(uploadStream);
+    });
+  }
+
+  async uploadMultipleImages(
+    files: Express.Multer.File[],
+    folder: string = 'sureshops',
+  ): Promise<CloudinaryResponse[]> {
+    const uploadPromises = files.map((file) => this.uploadImage(file, folder));
+    return Promise.all(uploadPromises);
+  }
+
+  async deleteImage(publicId: string): Promise<boolean> {
+    try {
+      const result = await cloudinary.uploader.destroy(publicId);
+      return result.result === 'ok';
+    } catch (error) {
+      throw new BadRequestException('Failed to delete image');
+    }
+  }
+
+  async uploadShopEntrance(file: Express.Multer.File): Promise<CloudinaryResponse> {
+    return this.uploadImage(file, 'sureshops/shop-entrances');
+  }
+
+  async uploadShopLogo(file: Express.Multer.File): Promise<CloudinaryResponse> {
+    return new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: 'sureshops/logos',
+          resource_type: 'image',
+          transformation: [
+            { width: 500, height: 500, crop: 'fill' },
+            { quality: 'auto' },
+            { fetch_format: 'auto' },
+          ],
+        },
+        (error: UploadApiErrorResponse, result: UploadApiResponse) => {
+          if (error) {
+            reject(new BadRequestException('Failed to upload logo'));
+          } else {
+            resolve({
+              url: result.secure_url,
+              publicId: result.public_id,
+              width: result.width,
+              height: result.height,
+              format: result.format,
+            });
+          }
+        },
+      );
+
+      streamifier.createReadStream(file.buffer).pipe(uploadStream);
+    });
+  }
+
+  async uploadMarketLayout(file: Express.Multer.File): Promise<CloudinaryResponse> {
+    return this.uploadImage(file, 'sureshops/market-layouts');
+  }
+
+  async uploadProductImage(file: Express.Multer.File): Promise<CloudinaryResponse> {
+    return this.uploadImage(file, 'sureshops/products');
+  }
+}
+import {
+  IsEmail,
+  IsString,
+  MinLength,
+  IsOptional,
+  IsEnum,
+} from 'class-validator';
+import { Role } from '../../common/enums/role.enum';
+
+export class CreateUserDto {
+  @IsString()
+  @MinLength(2)
+  firstName: string;
+
+  @IsString()
+  @MinLength(2)
+  lastName: string;
+
+  @IsEmail()
+  email: string;
+
+  @IsString()
+  @MinLength(6)
+  password: string;
+
+  @IsString()
+  phone: string;
+
+  @IsEnum(Role)
+  @IsOptional()
+  role?: Role;
+
+  @IsString()
+  @IsOptional()
+  avatar?: string;
+}
+import { IsString, IsOptional, IsEnum, IsBoolean } from 'class-validator';
+import { Role } from '../../common/enums/role.enum';
+
+export class UpdateUserDto {
+  @IsString()
+  @IsOptional()
+  firstName?: string;
+
+  @IsString()
+  @IsOptional()
+  lastName?: string;
+
+  @IsString()
+  @IsOptional()
+  phone?: string;
+
+  @IsEnum(Role)
+  @IsOptional()
+  role?: Role;
+
+  @IsString()
+  @IsOptional()
+  avatar?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  isActive?: boolean;
+}
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document, Types } from 'mongoose';
+import { Role } from '../../common/enums/role.enum';
+
+@Schema({ timestamps: true })
+export class User extends Document {
+  @Prop({ required: true })
+  firstName: string;
+
+  @Prop({ required: true })
+  lastName: string;
+
+  @Prop({ required: true, unique: true, lowercase: true })
+  email: string;
+
+  @Prop({ required: true })
+  password: string;
+
+  @Prop({ required: true })
+  phone: string;
+
+  @Prop({ type: String, enum: Role, default: Role.USER })
+  role: Role;
+
+  @Prop()
+  avatar?: string;
+
+  @Prop({ default: true })
+  isActive: boolean;
+
+  @Prop({ default: false })
+  isEmailVerified: boolean;
+
+  @Prop()
+  lastLoginAt?: Date;
+
+  @Prop({ type: Types.ObjectId, ref: 'Vendor' })
+  vendorProfile?: Types.ObjectId;
+
+  createdAt: Date;
+updatedAt: Date;
+}
+
+export const UserSchema = SchemaFactory.createForClass(User);
+
+UserSchema.index({ email: 1 });
+UserSchema.index({ phone: 1 });
+UserSchema.index({ role: 1 });
+import {
+  Controller,
+  Get,
+  Put,
+  Delete,
+  Body,
+  Param,
+  UseGuards,
+  Request,
+} from '@nestjs/common';
+import { UsersService } from './users.service';
+import { UpdateUserDto } from './dto/update-user.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { Role } from '../common/enums/role.enum';
+
+@Controller('users')
+@UseGuards(JwtAuthGuard)
+export class UsersController {
+  constructor(private usersService: UsersService) {}
+
+  @Get()
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  findAll() {
+    return this.usersService.findAll();
+  }
+
+  @Get('profile')
+  getProfile(@Request() req) {
+    return this.usersService.findById(req.user.id);
+  }
+
+  @Get(':id')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  findOne(@Param('id') id: string) {
+    return this.usersService.findById(id);
+  }
+
+  @Put('profile')
+  updateProfile(@Request() req, @Body() dto: UpdateUserDto) {
+    return this.usersService.update(req.user.id, dto);
+  }
+
+  @Put(':id')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  update(@Param('id') id: string, @Body() dto: UpdateUserDto) {
+    return this.usersService.update(id, dto);
+  }
+
+  @Delete(':id')
+  @UseGuards(RolesGuard)
+  @Roles(Role.SUPER_ADMIN)
+  delete(@Param('id') id: string) {
+    return this.usersService.delete(id);
+  }
+}
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { UsersService } from './users.service';
+import { UsersController } from './users.controller';
+import { User, UserSchema } from './schemas/user.schema';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
+  ],
+  controllers: [UsersController],
+  providers: [UsersService],
+  exports: [UsersService],
+})
+export class UsersModule {}
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { User } from './schemas/user.schema';
+import { CreateUserDto } from './dto/create-user.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
+
+@Injectable()
+export class UsersService {
+  constructor(@InjectModel(User.name) private userModel: Model<User>) {}
+
+  async create(dto: CreateUserDto): Promise<User> {
+    return this.userModel.create(dto);
+  }
+
+  async findAll(): Promise<User[]> {
+    return this.userModel.find().select('-password').sort({ createdAt: -1 });
+  }
+
+  async findById(id: string): Promise<User | null> {
+    return this.userModel.findById(id).select('-password');
+  }
+
+  async findByEmail(email: string): Promise<User | null> {
+    return this.userModel.findOne({ email: email.toLowerCase() });
+  }
+
+  async update(id: string, dto: UpdateUserDto): Promise<User> {
+    const user = await this.userModel
+      .findByIdAndUpdate(id, dto, { new: true })
+      .select('-password');
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    return user;
+  }
+
+  async updateVendorProfile(userId: string, vendorId: string): Promise<User> {
+    const user = await this.userModel
+      .findByIdAndUpdate(
+        userId,
+        { vendorProfile: vendorId },
+        { new: true },
+      )
+      .select('-password');
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    return user;
+  }
+
+  async delete(id: string): Promise<void> {
+    const result = await this.userModel.deleteOne({ _id: id });
+    if (result.deletedCount === 0) {
+      throw new NotFoundException('User not found');
+    }
+  }
+}
+import {
+  IsString,
+  IsOptional,
+  IsArray,
+  IsNumber,
+  IsMongoId,
+  IsEnum,
+  IsObject,
+  IsBoolean,
+  ValidateNested,
+  IsEmail,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+import { VendorType } from '../../common/enums/vendor-type.enum';
+
+class BankDetailsDto {
+  @IsString()
+  @IsOptional()
+  bankName?: string;
+
+  @IsString()
+  @IsOptional()
+  accountName?: string;
+
+  @IsString()
+  @IsOptional()
+  accountNumber?: string;
+
+  @IsString()
+  @IsOptional()
+  bankCode?: string;
+}
+
+class ContactDetailsDto {
+  @IsString()
+  phone: string;
+
+  @IsString()
+  @IsOptional()
+  alternatePhone?: string;
+
+  @IsEmail()
+  @IsOptional()
+  email?: string;
+
+  @IsString()
+  @IsOptional()
+  whatsapp?: string;
+
+  @IsString()
+  @IsOptional()
+  instagram?: string;
+
+  @IsString()
+  @IsOptional()
+  facebook?: string;
+
+  @IsString()
+  @IsOptional()
+  twitter?: string;
+
+  @IsString()
+  @IsOptional()
+  website?: string;
+}
+
+class ShopImagesDto {
+  @IsString()
+  @IsOptional()
+  entrancePhoto?: string;
+
+  @IsString()
+  @IsOptional()
+  logo?: string;
+
+  @IsString()
+  @IsOptional()
+  layoutMap?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  additionalImages?: string[];
+}
+
+class OperatingHoursDto {
+  @IsString()
+  @IsOptional()
+  openingTime?: string;
+
+  @IsString()
+  @IsOptional()
+  closingTime?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  operatingDays?: string[];
+
+  @IsBoolean()
+  @IsOptional()
+  is24Hours?: boolean;
+}
+
+export class CreateVendorDto {
+  @IsString()
+  businessName: string;
+
+  @IsString()
+  @IsOptional()
+  businessDescription?: string;
+
+  @IsEnum(VendorType)
+  vendorType: VendorType;
+
+  @IsMongoId()
+  stateId: string;
+
+  @IsMongoId()
+  areaId: string;
+
+  @IsMongoId()
+  @IsOptional()
+  marketId?: string;
+
+  @IsString()
+  @IsOptional()
+  shopNumber?: string;
+
+  @IsString()
+  @IsOptional()
+  shopFloor?: string;
+
+  @IsString()
+  @IsOptional()
+  shopBlock?: string;
+
+  @IsString()
+  @IsOptional()
+  shopAddress?: string;
+
+  @IsString()
+  @IsOptional()
+  landmark?: string;
+
+  @IsArray()
+  @IsNumber({}, { each: true })
+  @IsOptional()
+  coordinates?: [number, number];
+
+  @IsObject()
+  @ValidateNested()
+  @Type(() => ShopImagesDto)
+  @IsOptional()
+  shopImages?: ShopImagesDto;
+
+  @IsObject()
+  @ValidateNested()
+  @Type(() => ContactDetailsDto)
+  contactDetails: ContactDetailsDto;
+
+  @IsObject()
+  @ValidateNested()
+  @Type(() => BankDetailsDto)
+  @IsOptional()
+  bankDetails?: BankDetailsDto;
+
+  @IsObject()
+  @ValidateNested()
+  @Type(() => OperatingHoursDto)
+  @IsOptional()
+  operatingHours?: OperatingHoursDto;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  categories?: string[];
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  tags?: string[];
+}
+import { IsOptional, IsString, IsEnum, IsNumber, IsMongoId, IsBoolean } from 'class-validator';
+import { Type } from 'class-transformer';
+import { VendorType } from '../../common/enums/vendor-type.enum';
+
+export class FilterVendorDto {
+  @IsOptional()
+  @IsMongoId()
+  stateId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  areaId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  marketId?: string;
+
+  @IsOptional()
+  @IsEnum(VendorType)
+  vendorType?: VendorType;
+
+  @IsOptional()
+  @IsString()
+  category?: string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  longitude?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  latitude?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  maxDistance?: number;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  isVerified?: boolean;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  isFeatured?: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  page?: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  limit?: number = 20;
+}
+import {
+  IsString,
+  IsOptional,
+  IsArray,
+  IsNumber,
+  IsMongoId,
+  IsEnum,
+  IsObject,
+  IsBoolean,
+  ValidateNested,
+  IsEmail,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+import { VendorType } from '../../common/enums/vendor-type.enum';
+
+class BankDetailsDto {
+  @IsString()
+  @IsOptional()
+  bankName?: string;
+
+  @IsString()
+  @IsOptional()
+  accountName?: string;
+
+  @IsString()
+  @IsOptional()
+  accountNumber?: string;
+
+  @IsString()
+  @IsOptional()
+  bankCode?: string;
+}
+
+class ContactDetailsDto {
+  @IsString()
+  @IsOptional()
+  phone?: string;
+
+  @IsString()
+  @IsOptional()
+  alternatePhone?: string;
+
+  @IsEmail()
+  @IsOptional()
+  email?: string;
+
+  @IsString()
+  @IsOptional()
+  whatsapp?: string;
+
+  @IsString()
+  @IsOptional()
+  instagram?: string;
+
+  @IsString()
+  @IsOptional()
+  facebook?: string;
+
+  @IsString()
+  @IsOptional()
+  twitter?: string;
+
+  @IsString()
+  @IsOptional()
+  website?: string;
+}
+
+class ShopImagesDto {
+  @IsString()
+  @IsOptional()
+  entrancePhoto?: string;
+
+  @IsString()
+  @IsOptional()
+  logo?: string;
+
+  @IsString()
+  @IsOptional()
+  layoutMap?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  additionalImages?: string[];
+}
+
+class OperatingHoursDto {
+  @IsString()
+  @IsOptional()
+  openingTime?: string;
+
+  @IsString()
+  @IsOptional()
+  closingTime?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  operatingDays?: string[];
+
+  @IsBoolean()
+  @IsOptional()
+  is24Hours?: boolean;
+}
+
+export class UpdateVendorDto {
+  @IsString()
+  @IsOptional()
+  businessName?: string;
+
+  @IsString()
+  @IsOptional()
+  businessDescription?: string;
+
+  @IsEnum(VendorType)
+  @IsOptional()
+  vendorType?: VendorType;
+
+  @IsMongoId()
+  @IsOptional()
+  stateId?: string;
+
+  @IsMongoId()
+  @IsOptional()
+  areaId?: string;
+
+  @IsMongoId()
+  @IsOptional()
+  marketId?: string;
+
+  @IsString()
+  @IsOptional()
+  shopNumber?: string;
+
+  @IsString()
+  @IsOptional()
+  shopFloor?: string;
+
+  @IsString()
+  @IsOptional()
+  shopBlock?: string;
+
+  @IsString()
+  @IsOptional()
+  shopAddress?: string;
+
+  @IsString()
+  @IsOptional()
+  landmark?: string;
+
+  @IsArray()
+  @IsNumber({}, { each: true })
+  @IsOptional()
+  coordinates?: [number, number];
+
+  @IsObject()
+  @ValidateNested()
+  @Type(() => ShopImagesDto)
+  @IsOptional()
+  shopImages?: ShopImagesDto;
+
+  @IsObject()
+  @ValidateNested()
+  @Type(() => ContactDetailsDto)
+  @IsOptional()
+  contactDetails?: ContactDetailsDto;
+
+  @IsObject()
+  @ValidateNested()
+  @Type(() => BankDetailsDto)
+  @IsOptional()
+  bankDetails?: BankDetailsDto;
+
+  @IsObject()
+  @ValidateNested()
+  @Type(() => OperatingHoursDto)
+  @IsOptional()
+  operatingHours?: OperatingHoursDto;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  categories?: string[];
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  tags?: string[];
+
+  @IsBoolean()
+  @IsOptional()
+  isActive?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  isVerified?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  isFeatured?: boolean;
+}
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document, Types, Schema as MongooseSchema } from 'mongoose';
+import { VendorType } from '../../common/enums/vendor-type.enum';
+
+@Schema({ _id: false })
+class BankDetails {
+  @Prop()
+  bankName?: string;
+
+  @Prop()
+  accountName?: string;
+
+  @Prop()
+  accountNumber?: string;
+
+  @Prop()
+  bankCode?: string;
+}
+
+@Schema({ _id: false })
+class ContactDetails {
+  @Prop({ required: true })
+  phone: string;
+
+  @Prop()
+  alternatePhone?: string;
+
+  @Prop()
+  email?: string;
+
+  @Prop()
+  whatsapp?: string;
+
+  @Prop()
+  instagram?: string;
+
+  @Prop()
+  facebook?: string;
+
+  @Prop()
+  twitter?: string;
+
+  @Prop()
+  website?: string;
+}
+
+@Schema({ _id: false })
+class ShopImages {
+  @Prop()
+  entrancePhoto?: string;
+
+  @Prop()
+  logo?: string;
+
+  @Prop()
+  layoutMap?: string;
+
+  @Prop([String])
+  additionalImages?: string[];
+}
+
+@Schema({ _id: false })
+class OperatingHours {
+  @Prop()
+  openingTime?: string;
+
+  @Prop()
+  closingTime?: string;
+
+  @Prop([String])
+  operatingDays?: string[];
+
+  @Prop({ default: false })
+  is24Hours?: boolean;
+}
+
+@Schema({ timestamps: true })
+export class Vendor extends Document {
+  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  userId: Types.ObjectId;
+
+  @Prop({ required: true })
+  businessName: string;
+
+  @Prop()
+  businessDescription?: string;
+
+  @Prop({ type: String, enum: VendorType, required: true })
+  vendorType: VendorType;
+
+  // Location Hierarchy
+  @Prop({ type: Types.ObjectId, ref: 'State', required: true })
+  stateId: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'Area', required: true })
+  areaId: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'Market' })
+  marketId?: Types.ObjectId;
+
+  // Shop Details
+  @Prop()
+  shopNumber?: string;
+
+  @Prop()
+  shopFloor?: string;
+
+  @Prop()
+  shopBlock?: string;
+
+  @Prop()
+  shopAddress?: string;
+
+  @Prop()
+  landmark?: string;
+
+  // ✅ Geolocation — use Object type, define properly after schema creation
+  @Prop({ type: Object })
+  location?: {
+    type: 'Point';
+    coordinates: [number, number];
+  };
+
+  // Images
+  @Prop({ type: ShopImages })
+  shopImages?: ShopImages;
+
+  // Contact & Banking
+  @Prop({ type: ContactDetails, required: true })
+  contactDetails: ContactDetails;
+
+  @Prop({ type: BankDetails })
+  bankDetails?: BankDetails;
+
+  // Operating Hours
+  @Prop({ type: OperatingHours })
+  operatingHours?: OperatingHours;
+
+  // Categories of products sold
+  @Prop([String])
+  categories?: string[];
+
+  @Prop([String])
+  tags?: string[];
+
+  // Statistics
+  @Prop({ default: 0 })
+  totalProducts: number;
+
+  @Prop({ default: 0 })
+  totalViews: number;
+
+  @Prop({ default: 0 })
+  searchAppearances: number;
+
+  @Prop({ default: 0 })
+  rating: number;
+
+  @Prop({ default: 0 })
+  reviewCount: number;
+
+  // Price Range (computed from products)
+  @Prop({ default: 0 })
+  minProductPrice: number;
+
+  @Prop({ default: 0 })
+  maxProductPrice: number;
+
+  // Status
+  @Prop({ default: true })
+  isActive: boolean;
+
+  @Prop({ default: false })
+  isVerified: boolean;
+
+  @Prop({ default: false })
+  isFeatured: boolean;
+
+  @Prop({ default: true })
+  isOpen: boolean;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const VendorSchema = SchemaFactory.createForClass(Vendor);
+
+// ✅ Define location path AFTER schema creation — same pattern as Market schema
+// This prevents auto-defaulting { type: "Point" } when no coordinates exist
+VendorSchema.path('location', new MongooseSchema(
+  {
+    type: {
+      type: String,
+      enum: ['Point'],
+      required: true,
+    },
+    coordinates: {
+      type: [Number],
+      required: true,
+    },
+  },
+  { _id: false }
+));
+
+// ✅ Location is NOT required at document level
+VendorSchema.path('location').required(false);
+
+// ✅ sparse: true — skips documents where location is absent
+VendorSchema.index({ location: '2dsphere' }, { sparse: true });
+VendorSchema.index({ stateId: 1, areaId: 1, marketId: 1 });
+VendorSchema.index({ userId: 1 });
+VendorSchema.index({ vendorType: 1 });
+VendorSchema.index({ categories: 1 });
+VendorSchema.index({ isActive: 1, isVerified: 1 });
+VendorSchema.index({ businessName: 'text', businessDescription: 'text', tags: 'text' });

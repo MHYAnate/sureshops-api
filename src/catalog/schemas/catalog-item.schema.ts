@@ -56,5 +56,3 @@ export const CatalogItemSchema = SchemaFactory.createForClass(CatalogItem);
 
 CatalogItemSchema.index({ name: 'text', description: 'text', brand: 'text', tags: 'text' });
 CatalogItemSchema.index({ category: 1, subcategory: 1 });
-CatalogItemSchema.index({ sku: 1 });
-CatalogItemSchema.index({ barcode: 1 });

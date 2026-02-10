@@ -1,0 +1,597 @@
+same for this too
+
+
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+  Request,
+} from '@nestjs/common';
+import { VendorsService } from './vendors.service';
+import { CreateVendorDto } from './dto/create-vendor.dto';
+import { UpdateVendorDto } from './dto/update-vendor.dto';
+import { FilterVendorDto } from './dto/filter-vendor.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { Role } from '../common/enums/role.enum';
+
+@Controller('vendors')
+export class VendorsController {
+  constructor(private vendorsService: VendorsService) {}
+
+  @Get()
+  findAll(@Query() filterDto: FilterVendorDto) {
+    return this.vendorsService.findAll(filterDto);
+  }
+
+  @Get('my-profile')
+  @UseGuards(JwtAuthGuard)
+  getMyProfile(@Request() req) {
+    return this.vendorsService.findByUser(req.user.id);
+  }
+
+  @Get('market/:marketId')
+  findByMarket(@Param('marketId') marketId: string) {
+    return this.vendorsService.findByMarket(marketId);
+  }
+
+  @Get('nearby')
+  findNearby(
+    @Query('longitude') longitude: number,
+    @Query('latitude') latitude: number,
+    @Query('distance') distance?: number,
+  ) {
+    return this.vendorsService.findNearby(longitude, latitude, distance);
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string) {
+    return this.vendorsService.findById(id);
+  }
+
+  @Post()
+  @UseGuards(JwtAuthGuard)
+  create(@Body() dto: CreateVendorDto, @Request() req) {
+    return this.vendorsService.create(dto, req.user.id);
+  }
+
+  @Put(':id')
+  @UseGuards(JwtAuthGuard)
+  update(@Param('id') id: string, @Body() dto: UpdateVendorDto, @Request() req) {
+    return this.vendorsService.update(id, dto, req.user.id);
+  }
+
+  @Put(':id/admin')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  adminUpdate(@Param('id') id: string, @Body() dto: UpdateVendorDto) {
+    return this.vendorsService.adminUpdate(id, dto);
+  }
+
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard)
+  delete(@Param('id') id: string, @Request() req) {
+    return this.vendorsService.delete(id, req.user.id);
+  }
+}
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { VendorsService } from './vendors.service';
+import { VendorsController } from './vendors.controller';
+import { Vendor, VendorSchema } from './schemas/vendor.schema';
+import { MarketsModule } from '../markets/markets.module';
+import { UsersModule } from '../users/users.module';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([{ name: Vendor.name, schema: VendorSchema }]),
+    MarketsModule,
+    UsersModule,
+  ],
+  controllers: [VendorsController],
+  providers: [VendorsService],
+  exports: [VendorsService],
+})
+export class VendorsModule {}
+import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose';
+import { Vendor } from './schemas/vendor.schema';
+import { CreateVendorDto } from './dto/create-vendor.dto';
+import { UpdateVendorDto } from './dto/update-vendor.dto';
+import { FilterVendorDto } from './dto/filter-vendor.dto';
+import { MarketsService } from '../markets/markets.service';
+import { UsersService } from '../users/users.service';
+import { Role } from '../common/enums/role.enum';
+
+@Injectable()
+export class VendorsService {
+  constructor(
+    @InjectModel(Vendor.name) private vendorModel: Model<Vendor>,
+    private marketsService: MarketsService,
+    private usersService: UsersService,
+  ) {}
+
+  async create(dto: CreateVendorDto, userId: string): Promise<Vendor> {
+    const vendorData: any = { ...dto, userId };
+
+    // ✅ Only set location if valid coordinates are provided
+    if (
+      dto.coordinates &&
+      Array.isArray(dto.coordinates) &&
+      dto.coordinates.length === 2 &&
+      typeof dto.coordinates[0] === 'number' &&
+      typeof dto.coordinates[1] === 'number'
+    ) {
+      vendorData.location = {
+        type: 'Point',
+        coordinates: dto.coordinates,
+      };
+    }
+    // ✅ Always remove coordinates from the data (it's not a schema field)
+    delete vendorData.coordinates;
+
+    // ✅ Ensure no partial location object exists
+    if (
+      vendorData.location &&
+      (!vendorData.location.coordinates ||
+        !Array.isArray(vendorData.location.coordinates) ||
+        vendorData.location.coordinates.length !== 2)
+    ) {
+      delete vendorData.location;
+    }
+
+    const vendor = await this.vendorModel.create(vendorData);
+
+    // Update user role to vendor
+    await this.usersService.update(userId, { role: Role.VENDOR });
+    await this.usersService.updateVendorProfile(userId, vendor._id.toString());
+
+    // Increment market shop count if applicable
+    if (dto.marketId) {
+      await this.marketsService.incrementShopCount(dto.marketId);
+    }
+
+    return vendor;
+  }
+
+  async findAll(filterDto: FilterVendorDto): Promise<{
+    vendors: Vendor[];
+    total: number;
+    page: number;
+    totalPages: number;
+  }> {
+    const {
+      page = 1,
+      limit = 20,
+      stateId,
+      areaId,
+      marketId,
+      vendorType,
+      category,
+      search,
+      longitude,
+      latitude,
+      maxDistance,
+      isVerified,
+      isFeatured,
+    } = filterDto;
+
+    const query: Record<string, any> = { isActive: true };
+
+    if (stateId) query.stateId = new Types.ObjectId(stateId);
+    if (areaId) query.areaId = new Types.ObjectId(areaId);
+    if (marketId) query.marketId = new Types.ObjectId(marketId);
+    if (vendorType) query.vendorType = vendorType;
+    if (category) query.categories = { $in: [category] };
+    if (isVerified !== undefined) query.isVerified = isVerified;
+    if (isFeatured !== undefined) query.isFeatured = isFeatured;
+
+    if (search) {
+      query.$or = [
+        { businessName: { $regex: search, $options: 'i' } },
+        { businessDescription: { $regex: search, $options: 'i' } },
+        { tags: { $in: [new RegExp(search, 'i')] } },
+      ];
+    }
+
+    if (longitude && latitude) {
+      query.location = {
+        $near: {
+          $geometry: {
+            type: 'Point',
+            coordinates: [longitude, latitude],
+          },
+          $maxDistance: (maxDistance || 10) * 1000,
+        },
+      };
+    }
+
+    const skip = (page - 1) * limit;
+    const [vendors, total] = await Promise.all([
+      this.vendorModel
+        .find(query)
+        .populate('stateId', 'name code')
+        .populate('areaId', 'name')
+        .populate('marketId', 'name type')
+        .populate('userId', 'firstName lastName email')
+        .skip(skip)
+        .limit(limit)
+        .sort({ isFeatured: -1, rating: -1, createdAt: -1 }),
+      this.vendorModel.countDocuments(query),
+    ]);
+
+    return {
+      vendors,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async findById(id: string): Promise<Vendor> {
+    const vendor = await this.vendorModel
+      .findById(id)
+      .populate('stateId', 'name code')
+      .populate('areaId', 'name localGovernment')
+      .populate('marketId', 'name type address entrancePhoto layoutMap')
+      .populate('userId', 'firstName lastName email phone');
+
+    if (!vendor) {
+      throw new NotFoundException('Vendor not found');
+    }
+
+    await this.vendorModel.findByIdAndUpdate(id, { $inc: { totalViews: 1 } });
+
+    return vendor;
+  }
+
+  async findByUser(userId: string): Promise<Vendor> {
+    const vendor = await this.vendorModel
+      .findOne({ userId })
+      .populate('stateId', 'name code')
+      .populate('areaId', 'name')
+      .populate('marketId', 'name type');
+
+    if (!vendor) {
+      throw new NotFoundException('Vendor profile not found');
+    }
+    return vendor;
+  }
+
+  async findByMarket(marketId: string): Promise<Vendor[]> {
+    return this.vendorModel
+      .find({ marketId: new Types.ObjectId(marketId), isActive: true })
+      .populate('userId', 'firstName lastName')
+      .sort({ shopNumber: 1 });
+  }
+
+  async findNearby(
+    longitude: number,
+    latitude: number,
+    maxDistanceKm: number = 5,
+  ): Promise<Vendor[]> {
+    return this.vendorModel.find({
+      location: {
+        $near: {
+          $geometry: {
+            type: 'Point',
+            coordinates: [longitude, latitude],
+          },
+          $maxDistance: maxDistanceKm * 1000,
+        },
+      },
+      isActive: true,
+    })
+    .populate('stateId', 'name code')
+    .populate('areaId', 'name')
+    .populate('marketId', 'name type');
+  }
+
+  async update(id: string, dto: UpdateVendorDto, userId: string): Promise<Vendor> {
+    const vendor = await this.vendorModel.findById(id);
+    if (!vendor) {
+      throw new NotFoundException('Vendor not found');
+    }
+
+    if (vendor.userId.toString() !== userId) {
+      throw new ForbiddenException('You can only update your own vendor profile');
+    }
+
+    const updateData: any = { ...dto };
+
+    // ✅ Only set location if valid coordinates provided
+    if (
+      dto.coordinates &&
+      Array.isArray(dto.coordinates) &&
+      dto.coordinates.length === 2 &&
+      typeof dto.coordinates[0] === 'number' &&
+      typeof dto.coordinates[1] === 'number'
+    ) {
+      updateData.location = {
+        type: 'Point',
+        coordinates: dto.coordinates,
+      };
+    }
+    delete updateData.coordinates;
+
+    // ✅ Ensure no partial location object
+    if (
+      updateData.location &&
+      (!updateData.location.coordinates ||
+        !Array.isArray(updateData.location.coordinates) ||
+        updateData.location.coordinates.length !== 2)
+    ) {
+      delete updateData.location;
+    }
+
+    const updatedVendor = await this.vendorModel
+      .findByIdAndUpdate(id, updateData, { new: true })
+      .populate('stateId', 'name code')
+      .populate('areaId', 'name')
+      .populate('marketId', 'name type');
+
+    if (!updatedVendor) {
+      throw new NotFoundException('Vendor not found after update');
+    }
+
+    return updatedVendor;
+  }
+
+  async adminUpdate(id: string, dto: UpdateVendorDto): Promise<Vendor> {
+    const updateData: any = { ...dto };
+
+    // ✅ Only set location if valid coordinates provided
+    if (
+      dto.coordinates &&
+      Array.isArray(dto.coordinates) &&
+      dto.coordinates.length === 2 &&
+      typeof dto.coordinates[0] === 'number' &&
+      typeof dto.coordinates[1] === 'number'
+    ) {
+      updateData.location = {
+        type: 'Point',
+        coordinates: dto.coordinates,
+      };
+    }
+    delete updateData.coordinates;
+
+    // ✅ Ensure no partial location object
+    if (
+      updateData.location &&
+      (!updateData.location.coordinates ||
+        !Array.isArray(updateData.location.coordinates) ||
+        updateData.location.coordinates.length !== 2)
+    ) {
+      delete updateData.location;
+    }
+
+    const vendor = await this.vendorModel
+      .findByIdAndUpdate(id, updateData, { new: true })
+      .populate('stateId', 'name code')
+      .populate('areaId', 'name')
+      .populate('marketId', 'name type');
+
+    if (!vendor) {
+      throw new NotFoundException('Vendor not found');
+    }
+    return vendor;
+  }
+
+  async incrementProductCount(id: string): Promise<void> {
+    await this.vendorModel.findByIdAndUpdate(id, { $inc: { totalProducts: 1 } });
+  }
+
+  async decrementProductCount(id: string): Promise<void> {
+    await this.vendorModel.findByIdAndUpdate(id, { $inc: { totalProducts: -1 } });
+  }
+
+  async delete(id: string, userId: string): Promise<void> {
+    const vendor = await this.vendorModel.findById(id);
+    if (!vendor) {
+      throw new NotFoundException('Vendor not found');
+    }
+
+    if (vendor.userId.toString() !== userId) {
+      throw new ForbiddenException('You can only delete your own vendor profile');
+    }
+
+    if (vendor.marketId) {
+      await this.marketsService.decrementShopCount(vendor.marketId.toString());
+    }
+
+    await this.vendorModel.deleteOne({ _id: id });
+  }
+
+  async updatePriceRange(vendorId: string, minPrice: number, maxPrice: number): Promise<void> {
+    await this.vendorModel.findByIdAndUpdate(vendorId, {
+      minProductPrice: minPrice || 0,
+      maxProductPrice: maxPrice || 0,
+    });
+  }
+}
+import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { MongooseModule } from '@nestjs/mongoose';
+import { AuthModule } from './auth/auth.module';
+import { UsersModule } from './users/users.module';
+import { StatesModule } from './states/states.module';
+import { AreasModule } from './areas/areas.module';
+import { MarketsModule } from './markets/markets.module';
+import { VendorsModule } from './vendors/vendors.module';
+import { ProductsModule } from './products/products.module';
+import { CatalogModule } from './catalog/catalog.module';
+import { SearchModule } from './search/search.module';
+import { UploadModule } from './upload/upload.module';
+import { AdminModule } from './admin/admin.module';
+import { FavoritesModule } from './favorites/favorites.module';
+import { ReviewsModule } from './reviews/reviews.module';
+import { DatabaseModule } from './database/database.module';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: '.env',
+    }),
+    MongooseModule.forRootAsync({
+      imports: [ConfigModule],
+      useFactory: (configService: ConfigService) => ({
+        uri: configService.get<string>('MONGODB_URI'),
+      }),
+      inject: [ConfigService],
+    }),
+    AuthModule,
+    UsersModule,
+    StatesModule,
+    AreasModule,
+    MarketsModule,
+    VendorsModule,
+    ProductsModule,
+    CatalogModule,
+    SearchModule,
+    UploadModule,
+    AdminModule,
+    FavoritesModule,
+    ReviewsModule,
+    DatabaseModule,
+  ],
+})
+export class AppModule {}
+
+this is from app.service.ts
+
+import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
+import { AppModule } from './app.module';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { TransformInterceptor } from './common/interceptors/transform.interceptor';
+
+let cachedApp: any;
+
+async function createApp() {
+  const app = await NestFactory.create(AppModule);
+
+  // CORS
+  app.enableCors({
+    origin: true,
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    allowedHeaders: 'Content-Type, Accept, Authorization',
+    credentials: true,
+  });
+
+  // Global prefix
+  app.setGlobalPrefix('api/v1');
+
+  // Validation
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+      transformOptions: {
+        enableImplicitConversion: true,
+      },
+    }),
+  );
+
+  // Global filters
+  app.useGlobalFilters(new HttpExceptionFilter());
+
+  // Global interceptors
+  app.useGlobalInterceptors(new TransformInterceptor());
+
+  await app.init();
+  return app;
+}
+
+// Vercel Serverless Handler
+export default async function handler(req: any, res: any) {
+  if (!cachedApp) {
+    cachedApp = await createApp();
+  }
+
+  const instance = cachedApp.getHttpAdapter().getInstance();
+  return instance(req, res);
+}
+
+// Local Development
+if (process.env.NODE_ENV !== 'production') {
+  createApp().then(async (app) => {
+    await app.listen(4000);
+    console.log('🚀 SureShops API running on http://localhost:4000/api/v1');
+    console.log('📚 Health check: http://localhost:4000/api/v1/auth/health');
+  });
+}
+
+and this is from main.ts
+
+import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
+import { AppModule } from './app.module';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { TransformInterceptor } from './common/interceptors/transform.interceptor';
+
+let cachedApp: any;
+
+async function createApp() {
+  const app = await NestFactory.create(AppModule);
+
+  // CORS
+  app.enableCors({
+    origin: true,
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    allowedHeaders: 'Content-Type, Accept, Authorization',
+    credentials: true,
+  });
+
+  // Global prefix
+  app.setGlobalPrefix('api/v1');
+
+  // Validation
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+      transformOptions: {
+        enableImplicitConversion: true,
+      },
+    }),
+  );
+
+  // Global filters
+  app.useGlobalFilters(new HttpExceptionFilter());
+
+  // Global interceptors
+  app.useGlobalInterceptors(new TransformInterceptor());
+
+  await app.init();
+  return app;
+}
+
+// Vercel Serverless Handler
+export default async function handler(req: any, res: any) {
+  if (!cachedApp) {
+    cachedApp = await createApp();
+  }
+
+  const instance = cachedApp.getHttpAdapter().getInstance();
+  return instance(req, res);
+}
+
+// Local Development
+if (process.env.NODE_ENV !== 'production') {
+  createApp().then(async (app) => {
+    await app.listen(4000);
+    console.log('🚀 SureShops API running on http://localhost:4000/api/v1');
+    console.log('📚 Health check: http://localhost:4000/api/v1/auth/health');
+  });
+}

@@ -28,5 +28,4 @@ export class State extends Document {
 export const StateSchema = SchemaFactory.createForClass(State);
 
 StateSchema.index({ location: '2dsphere' });
-StateSchema.index({ name: 1 });
-StateSchema.index({ code: 1 });
+

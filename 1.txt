@@ -1,0 +1,4144 @@
+here is one part of my application called sureshops read it and store the information and wait for the remaining as context for my current developmental process as a junior dev that is building his mvp while learning on the go 
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "src/main.ts",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "src/main.ts",
+      "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"]
+    }
+  ]
+}
+import { IsEnum, IsOptional, IsString } from 'class-validator';
+import { ProductStatus } from '../../common/enums/product-status.enum';
+
+export class AdminUpdateProductDto {
+  @IsEnum(ProductStatus)
+  @IsOptional()
+  status?: ProductStatus;
+
+  @IsString()
+  @IsOptional()
+  rejectionReason?: string;
+}
+
+export class AdminProductActionDto {
+  @IsString()
+  action: 'approve' | 'reject' | 'flag' | 'delete';
+
+  @IsString()
+  @IsOptional()
+  reason?: string;
+}
+import { IsString, IsOptional, IsEnum, IsBoolean, IsEmail } from 'class-validator';
+import { Role } from '../../common/enums/role.enum';
+
+export class AdminUpdateUserDto {
+  @IsString()
+  @IsOptional()
+  firstName?: string;
+
+  @IsString()
+  @IsOptional()
+  lastName?: string;
+
+  @IsEmail()
+  @IsOptional()
+  email?: string;
+
+  @IsString()
+  @IsOptional()
+  phone?: string;
+
+  @IsEnum(Role)
+  @IsOptional()
+  role?: Role;
+
+  @IsBoolean()
+  @IsOptional()
+  isActive?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  isEmailVerified?: boolean;
+}
+
+export class AdminCreateUserDto {
+  @IsString()
+  firstName: string;
+
+  @IsString()
+  lastName: string;
+
+  @IsEmail()
+  email: string;
+
+  @IsString()
+  password: string;
+
+  @IsString()
+  phone: string;
+
+  @IsEnum(Role)
+  @IsOptional()
+  role?: Role = Role.USER;
+}import { IsBoolean, IsOptional, IsString } from 'class-validator';
+
+export class AdminUpdateVendorDto {
+  @IsBoolean()
+  @IsOptional()
+  isActive?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  isVerified?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  isFeatured?: boolean;
+
+  @IsString()
+  @IsOptional()
+  rejectionReason?: string;
+}
+
+export class AdminVendorActionDto {
+  @IsString()
+  action: 'approve' | 'reject' | 'suspend' | 'feature' | 'unfeature';
+
+  @IsString()
+  @IsOptional()
+  reason?: string;
+}
+export interface DashboardStats {
+  users: {
+    total: number;
+    active: number;
+    newThisMonth: number;
+    byRole: { role: string; count: number }[];
+  };
+  vendors: {
+    total: number;
+    verified: number;
+    pending: number;
+    featured: number;
+    newThisMonth: number;
+  };
+  products: {
+    total: number;
+    approved: number;
+    pending: number;
+    rejected: number;
+    newThisMonth: number;
+  };
+  locations: {
+    states: number;
+    areas: number;
+    markets: number;
+  };
+  activity: {
+    totalViews: number;
+    totalSearches: number;
+  };
+}
+
+export interface RecentActivity {
+  type: 'user_registered' | 'vendor_created' | 'product_added' | 'vendor_verified';
+  message: string;
+  timestamp: Date;
+  data?: any;
+}
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import { AdminService } from './admin.service';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { Role } from '../common/enums/role.enum';
+import { ProductStatus } from '../common/enums/product-status.enum';
+import { AdminUpdateUserDto, AdminCreateUserDto } from './dto/admin-update-user.dto';
+import { AdminUpdateVendorDto, AdminVendorActionDto } from './dto/admin-update-vendor.dto';
+import { AdminUpdateProductDto, AdminProductActionDto } from './dto/admin-update-product.dto';
+import { AdminSeeder } from '../database/seeders/admin.seeder';
+
+@Controller('admin')
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(Role.ADMIN, Role.SUPER_ADMIN)
+export class AdminController {
+  constructor(private adminService: AdminService,  private adminSeeder: AdminSeeder, ) {}
+
+
+
+  @Post('seed/admins')
+@Roles(Role.SUPER_ADMIN)
+async seedAdmins() {
+  await this.adminSeeder.seed();
+  return { message: 'Admins seeded successfully' };
+}
+
+@Get('seed/admins/list')
+@Roles(Role.SUPER_ADMIN)
+async listSeededAdmins() {
+  return this.adminSeeder.listAdmins();
+}
+
+  // ==================== DASHBOARD ====================
+
+  @Get('dashboard/stats')
+  getDashboardStats() {
+    return this.adminService.getDashboardStats();
+  }
+
+  @Get('dashboard/activity')
+  getRecentActivity(@Query('limit') limit?: number) {
+    return this.adminService.getRecentActivity(limit);
+  }
+
+  // ==================== USER MANAGEMENT ====================
+
+  @Get('users')
+  getAllUsers(
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+    @Query('role') role?: Role,
+    @Query('search') search?: string,
+    @Query('isActive') isActive?: boolean,
+  ) {
+    return this.adminService.getAllUsers({ page, limit, role, search, isActive });
+  }
+
+  @Get('users/:id')
+  getUserById(@Param('id') id: string) {
+    return this.adminService.getUserById(id);
+  }
+
+  @Post('users')
+  @Roles(Role.SUPER_ADMIN)
+  createUser(@Body() dto: AdminCreateUserDto) {
+    return this.adminService.createUser(dto);
+  }
+
+  @Put('users/:id')
+  updateUser(@Param('id') id: string, @Body() dto: AdminUpdateUserDto) {
+    return this.adminService.updateUser(id, dto);
+  }
+
+  @Delete('users/:id')
+  @Roles(Role.SUPER_ADMIN)
+  deleteUser(@Param('id') id: string) {
+    return this.adminService.deleteUser(id);
+  }
+
+  @Put('users/:id/role')
+  @Roles(Role.SUPER_ADMIN)
+  changeUserRole(@Param('id') id: string, @Body('role') role: Role) {
+    return this.adminService.changeUserRole(id, role);
+  }
+
+  // ==================== VENDOR MANAGEMENT ====================
+
+  @Get('vendors')
+  getAllVendors(
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+    @Query('isVerified') isVerified?: boolean,
+    @Query('isFeatured') isFeatured?: boolean,
+    @Query('search') search?: string,
+  ) {
+    return this.adminService.getAllVendors({ page, limit, isVerified, isFeatured, search });
+  }
+
+  @Get('vendors/pending')
+  getPendingVendors() {
+    return this.adminService.getPendingVendors();
+  }
+
+  @Get('vendors/:id')
+  getVendorById(@Param('id') id: string) {
+    return this.adminService.getVendorById(id);
+  }
+
+  @Put('vendors/:id')
+  updateVendor(@Param('id') id: string, @Body() dto: AdminUpdateVendorDto) {
+    return this.adminService.updateVendor(id, dto);
+  }
+
+  @Post('vendors/:id/action')
+  vendorAction(@Param('id') id: string, @Body() dto: AdminVendorActionDto) {
+    return this.adminService.vendorAction(id, dto);
+  }
+
+  // ==================== PRODUCT MANAGEMENT ====================
+
+  @Get('products')
+  getAllProducts(
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+    @Query('status') status?: ProductStatus,
+    @Query('search') search?: string,
+    @Query('vendorId') vendorId?: string,
+  ) {
+    return this.adminService.getAllProducts({ page, limit, status, search, vendorId });
+  }
+
+  @Get('products/pending')
+  getPendingProducts() {
+    return this.adminService.getPendingProducts();
+  }
+
+  @Get('products/:id')
+  getProductById(@Param('id') id: string) {
+    return this.adminService.getProductById(id);
+  }
+
+  @Put('products/:id')
+  updateProduct(@Param('id') id: string, @Body() dto: AdminUpdateProductDto) {
+    return this.adminService.updateProduct(id, dto);
+  }
+
+  @Post('products/:id/action')
+  productAction(@Param('id') id: string, @Body() dto: AdminProductActionDto) {
+    return this.adminService.productAction(id, dto);
+  }
+
+  @Post('products/bulk-approve')
+  bulkApproveProducts(@Body('ids') ids: string[]) {
+    return this.adminService.bulkApproveProducts(ids);
+  }
+
+  @Post('products/bulk-reject')
+  bulkRejectProducts(@Body('ids') ids: string[], @Body('reason') reason?: string) {
+    return this.adminService.bulkRejectProducts(ids, reason);
+  }
+}
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { AdminController } from './admin.controller';
+import { AdminService } from './admin.service';
+import { AdminSeeder } from '../database/seeders/admin.seeder';
+import { User, UserSchema } from '../users/schemas/user.schema';
+import { Vendor, VendorSchema } from '../vendors/schemas/vendor.schema';
+import { Product, ProductSchema } from '../products/schemas/product.schema';
+import { State, StateSchema } from '../states/schemas/state.schema';
+import { Area, AreaSchema } from '../areas/schemas/area.schema';
+import { Market, MarketSchema } from '../markets/schemas/market.schema';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([
+      { name: User.name, schema: UserSchema },
+      { name: Vendor.name, schema: VendorSchema },
+      { name: Product.name, schema: ProductSchema },
+      { name: State.name, schema: StateSchema },
+      { name: Area.name, schema: AreaSchema },
+      { name: Market.name, schema: MarketSchema },
+    ]),
+  ],
+  controllers: [AdminController],
+  providers: [AdminService, AdminSeeder],
+  exports: [AdminService, AdminSeeder],
+})
+export class AdminModule {}
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import * as bcrypt from 'bcryptjs';
+import { User } from '../users/schemas/user.schema';
+import { Vendor } from '../vendors/schemas/vendor.schema';
+import { Product } from '../products/schemas/product.schema';
+import { State } from '../states/schemas/state.schema';
+import { Area } from '../areas/schemas/area.schema';
+import { Market } from '../markets/schemas/market.schema';
+import { Role } from '../common/enums/role.enum';
+import { ProductStatus } from '../common/enums/product-status.enum';
+import { AdminUpdateUserDto, AdminCreateUserDto } from './dto/admin-update-user.dto';
+import { AdminUpdateVendorDto, AdminVendorActionDto } from './dto/admin-update-vendor.dto';
+import { AdminUpdateProductDto, AdminProductActionDto } from './dto/admin-update-product.dto';
+import { DashboardStats, RecentActivity } from './dto/dashboard-stats.dto';
+
+@Injectable()
+export class AdminService {
+  constructor(
+    @InjectModel(User.name) private userModel: Model<User>,
+    @InjectModel(Vendor.name) private vendorModel: Model<Vendor>,
+    @InjectModel(Product.name) private productModel: Model<Product>,
+    @InjectModel(State.name) private stateModel: Model<State>,
+    @InjectModel(Area.name) private areaModel: Model<Area>,
+    @InjectModel(Market.name) private marketModel: Model<Market>,
+  ) {}
+
+  // ==================== DASHBOARD ====================
+
+  async getDashboardStats(): Promise<DashboardStats> {
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const [
+      totalUsers,
+      activeUsers,
+      newUsersThisMonth,
+      usersByRole,
+      totalVendors,
+      verifiedVendors,
+      pendingVendors,
+      featuredVendors,
+      newVendorsThisMonth,
+      totalProducts,
+      approvedProducts,
+      pendingProducts,
+      rejectedProducts,
+      newProductsThisMonth,
+      totalStates,
+      totalAreas,
+      totalMarkets,
+      totalViews,
+      totalSearches,
+    ] = await Promise.all([
+      this.userModel.countDocuments(),
+      this.userModel.countDocuments({ isActive: true }),
+      this.userModel.countDocuments({ createdAt: { $gte: startOfMonth } }),
+      this.userModel.aggregate([
+        { $group: { _id: '$role', count: { $sum: 1 } } },
+      ]),
+      this.vendorModel.countDocuments(),
+      this.vendorModel.countDocuments({ isVerified: true }),
+      this.vendorModel.countDocuments({ isVerified: false, isActive: true }),
+      this.vendorModel.countDocuments({ isFeatured: true }),
+      this.vendorModel.countDocuments({ createdAt: { $gte: startOfMonth } }),
+      this.productModel.countDocuments(),
+      this.productModel.countDocuments({ status: ProductStatus.APPROVED }),
+      this.productModel.countDocuments({ status: ProductStatus.PENDING }),
+      this.productModel.countDocuments({ status: ProductStatus.REJECTED }),
+      this.productModel.countDocuments({ createdAt: { $gte: startOfMonth } }),
+      this.stateModel.countDocuments(),
+      this.areaModel.countDocuments(),
+      this.marketModel.countDocuments(),
+      this.vendorModel.aggregate([
+        { $group: { _id: null, total: { $sum: '$totalViews' } } },
+      ]),
+      this.productModel.aggregate([
+        { $group: { _id: null, total: { $sum: '$searchAppearances' } } },
+      ]),
+    ]);
+
+    return {
+      users: {
+        total: totalUsers,
+        active: activeUsers,
+        newThisMonth: newUsersThisMonth,
+        byRole: usersByRole.map((r) => ({ role: r._id, count: r.count })),
+      },
+      vendors: {
+        total: totalVendors,
+        verified: verifiedVendors,
+        pending: pendingVendors,
+        featured: featuredVendors,
+        newThisMonth: newVendorsThisMonth,
+      },
+      products: {
+        total: totalProducts,
+        approved: approvedProducts,
+        pending: pendingProducts,
+        rejected: rejectedProducts,
+        newThisMonth: newProductsThisMonth,
+      },
+      locations: {
+        states: totalStates,
+        areas: totalAreas,
+        markets: totalMarkets,
+      },
+      activity: {
+        totalViews: totalViews[0]?.total || 0,
+        totalSearches: totalSearches[0]?.total || 0,
+      },
+    };
+  }
+
+  async getRecentActivity(limit: number = 20): Promise<RecentActivity[]> {
+    const [recentUsers, recentVendors, recentProducts] = await Promise.all([
+      this.userModel
+        .find()
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .select('firstName lastName email createdAt'),
+      this.vendorModel
+        .find()
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .select('businessName isVerified createdAt'),
+      this.productModel
+        .find()
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .select('name status createdAt'),
+    ]);
+
+    const activities: RecentActivity[] = [];
+
+    recentUsers.forEach((user) => {
+      activities.push({
+        type: 'user_registered',
+        message: `New user registered: ${user.firstName} ${user.lastName}`,
+        timestamp: user.createdAt as any,
+        data: { userId: user._id, email: user.email },
+      });
+    });
+
+    recentVendors.forEach((vendor) => {
+      activities.push({
+        type: vendor.isVerified ? 'vendor_verified' : 'vendor_created',
+        message: vendor.isVerified
+          ? `Vendor verified: ${vendor.businessName}`
+          : `New vendor created: ${vendor.businessName}`,
+        timestamp: vendor.createdAt as any,
+        data: { vendorId: vendor._id },
+      });
+    });
+
+    recentProducts.forEach((product) => {
+      activities.push({
+        type: 'product_added',
+        message: `New product added: ${product.name}`,
+        timestamp: product.createdAt as any,
+        data: { productId: product._id, status: product.status },
+      });
+    });
+
+    // Sort by timestamp descending
+    activities.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
+    return activities.slice(0, limit);
+  }
+
+  // ==================== USER MANAGEMENT ====================
+
+  async getAllUsers(filters: {
+    page?: number;
+    limit?: number;
+    role?: Role;
+    search?: string;
+    isActive?: boolean;
+  }): Promise<{ users: User[]; total: number; page: number; totalPages: number }> {
+    const { page = 1, limit = 20, role, search, isActive } = filters;
+    const skip = (page - 1) * limit;
+
+    const query: any = {};
+    if (role) query.role = role;
+    if (isActive !== undefined) query.isActive = isActive;
+    if (search) {
+      query.$or = [
+        { firstName: { $regex: search, $options: 'i' } },
+        { lastName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    const [users, total] = await Promise.all([
+      this.userModel
+        .find(query)
+        .select('-password')
+        .skip(skip)
+        .limit(limit)
+        .sort({ createdAt: -1 }),
+      this.userModel.countDocuments(query),
+    ]);
+
+    return {
+      users,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async getUserById(id: string): Promise<User> {
+    const user = await this.userModel.findById(id).select('-password');
+    if (!user) throw new NotFoundException('User not found');
+    return user;
+  }
+
+  async createUser(dto: AdminCreateUserDto): Promise<User> {
+    const exists = await this.userModel.findOne({ email: dto.email.toLowerCase() });
+    if (exists) throw new BadRequestException('Email already exists');
+
+    const hashedPassword = await bcrypt.hash(dto.password, 12);
+    return this.userModel.create({
+      ...dto,
+      email: dto.email.toLowerCase(),
+      password: hashedPassword,
+    });
+  }
+
+  async updateUser(id: string, dto: AdminUpdateUserDto): Promise<User> {
+    const user = await this.userModel
+      .findByIdAndUpdate(id, dto, { new: true })
+      .select('-password');
+    if (!user) throw new NotFoundException('User not found');
+    return user;
+  }
+
+  async deleteUser(id: string): Promise<void> {
+    const result = await this.userModel.deleteOne({ _id: id });
+    if (result.deletedCount === 0) throw new NotFoundException('User not found');
+  }
+
+  async changeUserRole(id: string, role: Role): Promise<User> {
+    const user = await this.userModel
+      .findByIdAndUpdate(id, { role }, { new: true })
+      .select('-password');
+    if (!user) throw new NotFoundException('User not found');
+    return user;
+  }
+
+  // ==================== VENDOR MANAGEMENT ====================
+
+  async getAllVendors(filters: {
+    page?: number;
+    limit?: number;
+    isVerified?: boolean;
+    isFeatured?: boolean;
+    search?: string;
+  }): Promise<{ vendors: Vendor[]; total: number; page: number; totalPages: number }> {
+    const { page = 1, limit = 20, isVerified, isFeatured, search } = filters;
+    const skip = (page - 1) * limit;
+
+    const query: any = {};
+    if (isVerified !== undefined) query.isVerified = isVerified;
+    if (isFeatured !== undefined) query.isFeatured = isFeatured;
+    if (search) {
+      query.$or = [
+        { businessName: { $regex: search, $options: 'i' } },
+        { businessDescription: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    const [vendors, total] = await Promise.all([
+      this.vendorModel
+        .find(query)
+        .populate('userId', 'firstName lastName email')
+        .populate('stateId', 'name')
+        .populate('areaId', 'name')
+        .populate('marketId', 'name')
+        .skip(skip)
+        .limit(limit)
+        .sort({ createdAt: -1 }),
+      this.vendorModel.countDocuments(query),
+    ]);
+
+    return {
+      vendors,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async getVendorById(id: string): Promise<Vendor> {
+    const vendor = await this.vendorModel
+      .findById(id)
+      .populate('userId', 'firstName lastName email phone')
+      .populate('stateId', 'name')
+      .populate('areaId', 'name')
+      .populate('marketId', 'name');
+    if (!vendor) throw new NotFoundException('Vendor not found');
+    return vendor;
+  }
+
+  async updateVendor(id: string, dto: AdminUpdateVendorDto): Promise<Vendor> {
+    const vendor = await this.vendorModel.findByIdAndUpdate(id, dto, { new: true });
+    if (!vendor) throw new NotFoundException('Vendor not found');
+    return vendor;
+  }
+
+  async vendorAction(id: string, dto: AdminVendorActionDto): Promise<Vendor> {
+    const vendor = await this.vendorModel.findById(id);
+    if (!vendor) throw new NotFoundException('Vendor not found');
+
+    const updates: any = {};
+
+    switch (dto.action) {
+      case 'approve':
+        updates.isVerified = true;
+        updates.isActive = true;
+        break;
+      case 'reject':
+        updates.isVerified = false;
+        updates.isActive = false;
+        break;
+      case 'suspend':
+        updates.isActive = false;
+        break;
+      case 'feature':
+        updates.isFeatured = true;
+        break;
+      case 'unfeature':
+        updates.isFeatured = false;
+        break;
+    }
+
+    const updated = await this.vendorModel.findByIdAndUpdate(id, updates, { new: true });
+    if (!updated) throw new NotFoundException('Vendor not found');
+    return updated;
+  }
+
+  async getPendingVendors(): Promise<Vendor[]> {
+    return this.vendorModel
+      .find({ isVerified: false, isActive: true })
+      .populate('userId', 'firstName lastName email')
+      .populate('stateId', 'name')
+      .populate('areaId', 'name')
+      .sort({ createdAt: -1 });
+  }
+
+  // ==================== PRODUCT MANAGEMENT ====================
+
+  async getAllProducts(filters: {
+    page?: number;
+    limit?: number;
+    status?: ProductStatus;
+    search?: string;
+    vendorId?: string;
+  }): Promise<{ products: Product[]; total: number; page: number; totalPages: number }> {
+    const { page = 1, limit = 20, status, search, vendorId } = filters;
+    const skip = (page - 1) * limit;
+
+    const query: any = {};
+    if (status) query.status = status;
+    if (vendorId) query.vendorId = vendorId;
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    const [products, total] = await Promise.all([
+      this.productModel
+        .find(query)
+        .populate({
+          path: 'vendorId',
+          select: 'businessName isVerified',
+        })
+        .skip(skip)
+        .limit(limit)
+        .sort({ createdAt: -1 }),
+      this.productModel.countDocuments(query),
+    ]);
+
+    return {
+      products,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async getProductById(id: string): Promise<Product> {
+    const product = await this.productModel
+      .findById(id)
+      .populate('vendorId');
+    if (!product) throw new NotFoundException('Product not found');
+    return product;
+  }
+
+  async updateProduct(id: string, dto: AdminUpdateProductDto): Promise<Product> {
+    const product = await this.productModel.findByIdAndUpdate(id, dto, { new: true });
+    if (!product) throw new NotFoundException('Product not found');
+    return product;
+  }
+
+  async productAction(id: string, dto: AdminProductActionDto): Promise<Product> {
+    const product = await this.productModel.findById(id);
+    if (!product) throw new NotFoundException('Product not found');
+
+    const updates: any = {};
+
+    switch (dto.action) {
+      case 'approve':
+        updates.status = ProductStatus.APPROVED;
+        break;
+      case 'reject':
+        updates.status = ProductStatus.REJECTED;
+        break;
+      case 'flag':
+        updates.status = ProductStatus.PENDING;
+        break;
+      case 'delete':
+        await this.productModel.deleteOne({ _id: id });
+        return product;
+    }
+    const updated = await this.productModel.findByIdAndUpdate(id, updates, { new: true });
+    if (!updated) throw new NotFoundException('Product not found');
+    return updated;
+  }
+
+  async getPendingProducts(): Promise<Product[]> {
+    return this.productModel
+      .find({ status: ProductStatus.PENDING })
+      .populate('vendorId', 'businessName')
+      .sort({ createdAt: -1 });
+  }
+
+  async bulkApproveProducts(ids: string[]): Promise<number> {
+    const result = await this.productModel.updateMany(
+      { _id: { $in: ids } },
+      { status: ProductStatus.APPROVED },
+    );
+    return result.modifiedCount;
+  }
+
+  async bulkRejectProducts(ids: string[], reason?: string): Promise<number> {
+    const result = await this.productModel.updateMany(
+      { _id: { $in: ids } },
+      { status: ProductStatus.REJECTED },
+    );
+    return result.modifiedCount;
+  }
+}
+import { IsString, IsOptional, IsArray, IsNumber, IsMongoId } from 'class-validator';
+
+export class CreateAreaDto {
+  @IsString()
+  name: string;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @IsMongoId()
+  stateId: string;
+
+  @IsString()
+  @IsOptional()
+  localGovernment?: string;
+
+  @IsArray()
+  @IsNumber({}, { each: true })
+  @IsOptional()
+  coordinates?: [number, number];
+
+  @IsString()
+  @IsOptional()
+  postalCode?: string;
+}
+import { IsString, IsOptional, IsArray, IsNumber, IsBoolean } from 'class-validator';
+
+export class UpdateAreaDto {
+  @IsString()
+  @IsOptional()
+  name?: string;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @IsString()
+  @IsOptional()
+  localGovernment?: string;
+
+  @IsArray()
+  @IsNumber({}, { each: true })
+  @IsOptional()
+  coordinates?: [number, number];
+
+  @IsString()
+  @IsOptional()
+  postalCode?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  isActive?: boolean;
+}
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document, Types } from 'mongoose';
+
+@Schema({ timestamps: true })
+export class Area extends Document {
+  @Prop({ required: true })
+  name: string;
+
+  @Prop()
+  description?: string;
+
+  @Prop({ type: Types.ObjectId, ref: 'State', required: true })
+  stateId: Types.ObjectId;
+
+  @Prop()
+  localGovernment?: string;
+
+  @Prop({ type: { type: String, enum: ['Point'], default: 'Point' }, coordinates: [Number] })
+  location?: {
+    type: 'Point';
+    coordinates: [number, number];
+  };
+
+  @Prop()
+  postalCode?: string;
+
+  @Prop({ default: true })
+  isActive: boolean;
+}
+
+export const AreaSchema = SchemaFactory.createForClass(Area);
+
+AreaSchema.index({ location: '2dsphere' });
+AreaSchema.index({ stateId: 1 });
+AreaSchema.index({ name: 1, stateId: 1 });
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import { AreasService } from './areas.service';
+import { CreateAreaDto } from './dto/create-area.dto';
+import { UpdateAreaDto } from './dto/update-area.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { Role } from '../common/enums/role.enum';
+
+@Controller('areas')
+export class AreasController {
+  constructor(private areasService: AreasService) {}
+
+  @Get()
+  findAll() {
+    return this.areasService.findAll();
+  }
+
+  @Get('state/:stateId')
+  findByState(@Param('stateId') stateId: string) {
+    return this.areasService.findByState(stateId);
+  }
+
+  @Get('nearby')
+  findNearby(
+    @Query('longitude') longitude: number,
+    @Query('latitude') latitude: number,
+    @Query('distance') distance?: number,
+  ) {
+    return this.areasService.findNearby(longitude, latitude, distance);
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string) {
+    return this.areasService.findById(id);
+  }
+
+  @Post()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  create(@Body() dto: CreateAreaDto) {
+    return this.areasService.create(dto);
+  }
+
+  @Put(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  update(@Param('id') id: string, @Body() dto: UpdateAreaDto) {
+    return this.areasService.update(id, dto);
+  }
+
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SUPER_ADMIN)
+  delete(@Param('id') id: string) {
+    return this.areasService.delete(id);
+  }
+}
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { AreasService } from './areas.service';
+import { AreasController } from './areas.controller';
+import { Area, AreaSchema } from './schemas/area.schema';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([{ name: Area.name, schema: AreaSchema }]),
+  ],
+  controllers: [AreasController],
+  providers: [AreasService],
+  exports: [AreasService],
+})
+export class AreasModule {}
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose';
+import { Area } from './schemas/area.schema';
+import { CreateAreaDto } from './dto/create-area.dto';
+import { UpdateAreaDto } from './dto/update-area.dto';
+
+@Injectable()
+export class AreasService {
+  constructor(@InjectModel(Area.name) private areaModel: Model<Area>) {}
+
+  async create(dto: CreateAreaDto): Promise<Area> {
+    const areaData: any = { ...dto };
+    if (dto.coordinates) {
+      areaData.location = {
+        type: 'Point',
+        coordinates: dto.coordinates,
+      };
+    }
+    delete areaData.coordinates;
+    return this.areaModel.create(areaData);
+  }
+
+  async findAll(): Promise<Area[]> {
+    return this.areaModel
+      .find({ isActive: true })
+      .populate('stateId', 'name code')
+      .sort({ name: 1 });
+  }
+
+  async findByState(stateId: string): Promise<Area[]> {
+    // ✅ Convert string to ObjectId — MongoDB stores stateId as ObjectId
+    const objectId = new Types.ObjectId(stateId);
+
+    return this.areaModel
+      .find({ stateId: objectId, isActive: true })
+      .populate('stateId', 'name code')
+      .sort({ name: 1 });
+  }
+
+  async findById(id: string): Promise<Area> {
+    const area = await this.areaModel
+      .findById(id)
+      .populate('stateId', 'name code');
+    if (!area) {
+      throw new NotFoundException('Area not found');
+    }
+    return area;
+  }
+
+  async findNearby(
+    longitude: number,
+    latitude: number,
+    maxDistanceKm: number = 10,
+  ): Promise<Area[]> {
+    return this.areaModel.find({
+      location: {
+        $near: {
+          $geometry: {
+            type: 'Point',
+            coordinates: [longitude, latitude],
+          },
+          $maxDistance: maxDistanceKm * 1000,
+        },
+      },
+      isActive: true,
+    }).populate('stateId', 'name code');
+  }
+
+  async update(id: string, dto: UpdateAreaDto): Promise<Area> {
+    const updateData: any = { ...dto };
+    if (dto.coordinates) {
+      updateData.location = {
+        type: 'Point',
+        coordinates: dto.coordinates,
+      };
+    }
+    delete updateData.coordinates;
+
+    const area = await this.areaModel
+      .findByIdAndUpdate(id, updateData, { new: true })
+      .populate('stateId', 'name code');
+    if (!area) {
+      throw new NotFoundException('Area not found');
+    }
+    return area;
+  }
+
+  async delete(id: string): Promise<void> {
+    const result = await this.areaModel.deleteOne({ _id: id });
+    if (result.deletedCount === 0) {
+      throw new NotFoundException('Area not found');
+    }
+  }
+}
+import { SetMetadata } from '@nestjs/common';
+import { Role } from '../../common/enums/role.enum';
+
+export const ROLES_KEY = 'roles';
+export const Roles = (...roles: Role[]) => SetMetadata(ROLES_KEY, roles);
+import { IsEmail, IsString } from 'class-validator';
+
+export class LoginDto {
+  @IsEmail()
+  email: string;
+
+  @IsString()
+  password: string;
+}
+import { IsEmail, IsString, MinLength, IsOptional, IsEnum } from 'class-validator';
+import { Role } from '../../common/enums/role.enum';
+
+export class RegisterDto {
+  @IsString()
+  @MinLength(2)
+  firstName: string;
+
+  @IsString()
+  @MinLength(2)
+  lastName: string;
+
+  @IsEmail()
+  email: string;
+
+  @IsString()
+  @MinLength(6)
+  password: string;
+
+  @IsString()
+  phone: string;
+
+  @IsEnum(Role)
+  @IsOptional()
+  role?: Role = Role.USER;
+}
+import { Injectable, ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
+
+@Injectable()
+export class JwtAuthGuard extends AuthGuard('jwt') {
+  canActivate(context: ExecutionContext) {
+    return super.canActivate(context);
+  }
+
+  handleRequest(err: any, user: any, info: any) {
+    if (err || !user) {
+      throw err || new UnauthorizedException('Authentication required');
+    }
+    return user;
+  }
+}
+import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { Role } from '../../common/enums/role.enum';
+import { ROLES_KEY } from '../decorators/roles.decorator';
+
+@Injectable()
+export class RolesGuard implements CanActivate {
+  constructor(private reflector: Reflector) {}
+
+  canActivate(context: ExecutionContext): boolean {
+    const requiredRoles = this.reflector.getAllAndOverride<Role[]>(ROLES_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+
+    if (!requiredRoles) {
+      return true;
+    }
+
+    const { user } = context.switchToHttp().getRequest();
+    return requiredRoles.some((role) => user.role === role);
+  }
+}
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { PassportStrategy } from '@nestjs/passport';
+import { ExtractJwt, Strategy } from 'passport-jwt';
+import { ConfigService } from '@nestjs/config';
+import { UsersService } from '../../users/users.service';
+
+@Injectable()
+export class JwtStrategy extends PassportStrategy(Strategy) {
+  constructor(
+    configService: ConfigService,
+    private usersService: UsersService,
+  ) {
+    const jwtSecret = configService.get<string>('JWT_SECRET');
+    if (!jwtSecret) {
+      throw new Error('JWT_SECRET is not defined');
+    }
+    super({
+      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      ignoreExpiration: false,
+      secretOrKey: jwtSecret,
+    });
+  }
+
+  async validate(payload: any) {
+    const user = await this.usersService.findById(payload.sub);
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+    return {
+      id: user._id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      role: user.role,
+    };
+  }
+}
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  UseGuards,
+  Request,
+} from '@nestjs/common';
+import { AuthService } from './auth.service';
+import { RegisterDto } from './dto/register.dto';
+import { LoginDto } from './dto/login.dto';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+
+@Controller('auth')
+export class AuthController {
+  constructor(private authService: AuthService) {}
+
+  @Post('register')
+  register(@Body() dto: RegisterDto) {
+    return this.authService.register(dto);
+  }
+
+  @Post('login')
+  login(@Body() dto: LoginDto) {
+    return this.authService.login(dto);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('me')
+  getMe(@Request() req) {
+    return req.user;
+  }
+
+  @Get('health')
+  health() {
+    return { status: 'ok', timestamp: new Date().toISOString() };
+  }
+}
+import { Module } from '@nestjs/common';
+import { JwtModule } from '@nestjs/jwt';
+import { PassportModule } from '@nestjs/passport';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { AuthService } from './auth.service';
+import { AuthController } from './auth.controller';
+import { JwtStrategy } from './strategies/jwt.strategy';
+import { UsersModule } from '../users/users.module';
+
+@Module({
+  imports: [
+    UsersModule,
+    PassportModule.register({ defaultStrategy: 'jwt' }),
+    ConfigModule,
+    JwtModule.registerAsync({
+      imports: [ConfigModule],
+      useFactory: (configService: ConfigService) => ({
+        secret: configService.get<string>('JWT_SECRET'),
+        signOptions: {
+          expiresIn: configService.get<string>('JWT_EXPIRES_IN') as any || '7d',
+        },
+      }),
+      inject: [ConfigService],
+    }),
+  ],
+  controllers: [AuthController],
+  providers: [AuthService, JwtStrategy],
+  exports: [JwtStrategy, PassportModule, AuthService],
+})
+export class AuthModule {}
+import {
+  Injectable,
+  UnauthorizedException,
+  ConflictException,
+} from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
+import * as bcrypt from 'bcryptjs';
+import { UsersService } from '../users/users.service';
+import { RegisterDto } from './dto/register.dto';
+import { LoginDto } from './dto/login.dto';
+
+@Injectable()
+export class AuthService {
+  constructor(
+    private usersService: UsersService,
+    private jwtService: JwtService,
+    private configService: ConfigService,
+  ) {}
+
+  async register(dto: RegisterDto) {
+    const exists = await this.usersService.findByEmail(dto.email);
+    if (exists) {
+      throw new ConflictException('Email already exists');
+    }
+
+    const hashedPassword = await bcrypt.hash(dto.password, 12);
+    const user = await this.usersService.create({
+      ...dto,
+      password: hashedPassword,
+    });
+
+    const token = this.generateToken(user);
+
+    return {
+      access_token: token,
+      user: {
+        id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        role: user.role,
+      },
+    };
+  }
+
+  async login(dto: LoginDto) {
+    const user = await this.usersService.findByEmail(dto.email);
+    if (!user) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    const isValid = await bcrypt.compare(dto.password, user.password);
+    if (!isValid) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    const token = this.generateToken(user);
+
+    return {
+      access_token: token,
+      user: {
+        id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        role: user.role,
+      },
+    };
+  }
+
+  private generateToken(user: any): string {
+    return this.jwtService.sign(
+      {
+        sub: user._id.toString(),
+        email: user.email,
+        role: user.role,
+      },
+      { secret: this.configService.get<string>('JWT_SECRET') },
+    );
+  }
+}
+import { IsString, IsOptional, IsArray, IsObject } from 'class-validator';
+
+export class CreateCatalogItemDto {
+  @IsString()
+  name: string;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @IsString()
+  @IsOptional()
+  sku?: string;
+
+  @IsString()
+  @IsOptional()
+  barcode?: string;
+
+  @IsString()
+  @IsOptional()
+  brand?: string;
+
+  @IsString()
+  category: string;
+
+  @IsString()
+  @IsOptional()
+  subcategory?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  tags?: string[];
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  images?: string[];
+
+  @IsObject()
+  @IsOptional()
+  specifications?: Record<string, any>;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  alternateNames?: string[];
+}
+import { IsOptional, IsString, IsNumber } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class FilterCatalogDto {
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @IsOptional()
+  @IsString()
+  category?: string;
+
+  @IsOptional()
+  @IsString()
+  subcategory?: string;
+
+  @IsOptional()
+  @IsString()
+  brand?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  page?: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  limit?: number = 20;
+}
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document } from 'mongoose';
+
+@Schema({ timestamps: true })
+export class CatalogItem extends Document {
+  @Prop({ required: true })
+  name: string;
+
+  @Prop()
+  description?: string;
+
+  @Prop({ unique: true, sparse: true })
+  sku?: string;
+
+  @Prop({ unique: true, sparse: true })
+  barcode?: string;
+
+  @Prop()
+  brand?: string;
+
+  @Prop({ required: true })
+  category: string;
+
+  @Prop()
+  subcategory?: string;
+
+  @Prop([String])
+  tags?: string[];
+
+  @Prop([String])
+  images?: string[];
+
+  @Prop({ type: Object })
+  specifications?: Record<string, any>;
+
+  @Prop([String])
+  alternateNames?: string[];
+
+  @Prop({ default: 0 })
+  totalListings: number;
+
+  @Prop({ default: 0 })
+  lowestPrice: number;
+
+  @Prop({ default: 0 })
+  highestPrice: number;
+
+  @Prop({ default: 0 })
+  averagePrice: number;
+
+  @Prop({ default: true })
+  isActive: boolean;
+}
+
+export const CatalogItemSchema = SchemaFactory.createForClass(CatalogItem);
+
+CatalogItemSchema.index({ name: 'text', description: 'text', brand: 'text', tags: 'text' });
+CatalogItemSchema.index({ category: 1, subcategory: 1 });
+CatalogItemSchema.index({ sku: 1 });
+CatalogItemSchema.index({ barcode: 1 });
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import { CatalogService } from './catalog.service';
+import { CreateCatalogItemDto } from './dto/create-catalog-item.dto';
+import { FilterCatalogDto } from './dto/filter-catalog.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { Role } from '../common/enums/role.enum';
+
+@Controller('catalog')
+export class CatalogController {
+  constructor(private catalogService: CatalogService) {}
+
+  @Get()
+  findAll(@Query() filterDto: FilterCatalogDto) {
+    return this.catalogService.findAll(filterDto);
+  }
+
+  @Get('categories')
+  getCategories() {
+    return this.catalogService.getCategories();
+  }
+
+  @Get('brands')
+  getBrands(@Query('category') category?: string) {
+    return this.catalogService.getBrands(category);
+  }
+
+  @Get('search')
+  searchByName(@Query('name') name: string) {
+    return this.catalogService.searchByName(name);
+  }
+
+  @Get('sku/:sku')
+  findBySku(@Param('sku') sku: string) {
+    return this.catalogService.findBySku(sku);
+  }
+
+  @Get('barcode/:barcode')
+  findByBarcode(@Param('barcode') barcode: string) {
+    return this.catalogService.findByBarcode(barcode);
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string) {
+    return this.catalogService.findById(id);
+  }
+
+  @Post()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  create(@Body() dto: CreateCatalogItemDto) {
+    return this.catalogService.create(dto);
+  }
+}
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { CatalogController } from './catalog.controller';
+import { CatalogService } from './catalog.service';
+import { CatalogItem, CatalogItemSchema } from './schemas/catalog-item.schema';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([
+      { name: CatalogItem.name, schema: CatalogItemSchema },
+    ]),
+  ],
+  controllers: [CatalogController],
+  providers: [CatalogService],
+  exports: [CatalogService],
+})
+export class CatalogModule {}
+import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { CatalogItem } from './schemas/catalog-item.schema';
+import { CreateCatalogItemDto } from './dto/create-catalog-item.dto';
+import { FilterCatalogDto } from './dto/filter-catalog.dto';
+
+@Injectable()
+export class CatalogService {
+  constructor(
+    @InjectModel(CatalogItem.name) private catalogModel: Model<CatalogItem>,
+  ) {}
+
+  async create(dto: CreateCatalogItemDto): Promise<CatalogItem> {
+    // Check for duplicates
+    const exists = await this.catalogModel.findOne({
+      $or: [
+        { sku: dto.sku },
+        { barcode: dto.barcode },
+        { name: { $regex: `^${dto.name}$`, $options: 'i' } },
+      ],
+    });
+
+    if (exists) {
+      throw new ConflictException('Catalog item already exists');
+    }
+
+    return this.catalogModel.create(dto);
+  }
+
+  async findAll(filterDto: FilterCatalogDto): Promise<{
+    items: CatalogItem[];
+    total: number;
+    page: number;
+    totalPages: number;
+  }> {
+    const { page = 1, limit = 20, search, category, subcategory, brand } = filterDto;
+    const skip = (page - 1) * limit;
+
+    const query: Record<string, any> = { isActive: true };
+
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { brand: { $regex: search, $options: 'i' } },
+        { tags: { $in: [new RegExp(search, 'i')] } },
+        { alternateNames: { $in: [new RegExp(search, 'i')] } },
+      ];
+    }
+
+    if (category) query.category = category;
+    if (subcategory) query.subcategory = subcategory;
+    if (brand) query.brand = { $regex: brand, $options: 'i' };
+
+    const [items, total] = await Promise.all([
+      this.catalogModel
+        .find(query)
+        .skip(skip)
+        .limit(limit)
+        .sort({ totalListings: -1, name: 1 }),
+      this.catalogModel.countDocuments(query),
+    ]);
+
+    return {
+      items,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async findById(id: string): Promise<CatalogItem> {
+    const item = await this.catalogModel.findById(id);
+    if (!item) {
+      throw new NotFoundException('Catalog item not found');
+    }
+    return item;
+  }
+
+  async findBySku(sku: string): Promise<CatalogItem | null> {
+    return this.catalogModel.findOne({ sku });
+  }
+
+  async findByBarcode(barcode: string): Promise<CatalogItem | null> {
+    return this.catalogModel.findOne({ barcode });
+  }
+
+  async searchByName(name: string): Promise<CatalogItem[]> {
+    return this.catalogModel.find({
+      $or: [
+        { name: { $regex: name, $options: 'i' } },
+        { alternateNames: { $in: [new RegExp(name, 'i')] } },
+      ],
+      isActive: true,
+    }).limit(10);
+  }
+
+  async updatePriceStats(catalogItemId: string, prices: number[]): Promise<void> {
+    if (prices.length === 0) return;
+
+    const lowestPrice = Math.min(...prices);
+    const highestPrice = Math.max(...prices);
+    const averagePrice = prices.reduce((a, b) => a + b, 0) / prices.length;
+
+    await this.catalogModel.findByIdAndUpdate(catalogItemId, {
+      lowestPrice,
+      highestPrice,
+      averagePrice: Math.round(averagePrice * 100) / 100,
+      totalListings: prices.length,
+    });
+  }
+
+  async getCategories(): Promise<{ category: string; count: number }[]> {
+    return this.catalogModel.aggregate([
+      { $match: { isActive: true } },
+      {
+        $group: {
+          _id: '$category',
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { count: -1 } },
+      {
+        $project: {
+          category: '$_id',
+          count: 1,
+          _id: 0,
+        },
+      },
+    ]);
+  }
+
+  async getBrands(category?: string): Promise<{ brand: string; count: number }[]> {
+    const match: Record<string, any> = { isActive: true, brand: { $exists: true, $ne: null } };
+    if (category) match.category = category;
+
+    return this.catalogModel.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: '$brand',
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { count: -1 } },
+      { $limit: 50 },
+      {
+        $project: {
+          brand: '$_id',
+          count: 1,
+          _id: 0,
+        },
+      },
+    ]);
+  }
+}
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from '../app.module';
+import { MasterSeeder, AdminSeeder, StatesSeeder, AreasSeeder, MarketsSeeder, CategoriesSeeder } from '../database/seeders';
+import { Logger } from '@nestjs/common';
+
+async function bootstrap() {
+  const logger = new Logger('SeedCommand');
+
+  try {
+    logger.log('Initializing application...');
+    const app = await NestFactory.createApplicationContext(AppModule);
+
+    const masterSeeder = app.get(MasterSeeder);
+    const adminSeeder = app.get(AdminSeeder);
+    const statesSeeder = app.get(StatesSeeder);
+    const areasSeeder = app.get(AreasSeeder);
+    const marketsSeeder = app.get(MarketsSeeder);
+    const categoriesSeeder = app.get(CategoriesSeeder);
+
+    const args = process.argv.slice(2);
+    const command = args[0];
+
+    switch (command) {
+      case 'all':
+        await masterSeeder.seedAll();
+        break;
+
+      case 'locations':
+        await masterSeeder.seedLocations();
+        break;
+
+      case 'admins':
+        await adminSeeder.seed();
+        break;
+
+      case 'states':
+        await statesSeeder.seed();
+        break;
+
+      case 'areas':
+        await areasSeeder.seed();
+        break;
+
+      case 'markets':
+        await marketsSeeder.seed();
+        break;
+
+      case 'categories':
+        await categoriesSeeder.seed();
+        break;
+
+      case 'admins:list':
+        const admins = await adminSeeder.listAdmins();
+        console.table(
+          admins.map((a) => ({
+            id: a._id.toString(),
+            name: `${a.firstName} ${a.lastName}`,
+            email: a.email,
+            role: a.role,
+          })),
+        );
+        break;
+
+      default:
+        logger.log('Available commands:');
+        logger.log('  npm run seed all        - Seed everything');
+        logger.log('  npm run seed locations  - Seed states, areas, markets');
+        logger.log('  npm run seed admins     - Seed admin users');
+        logger.log('  npm run seed states     - Seed Nigerian states');
+        logger.log('  npm run seed areas      - Seed areas');
+        logger.log('  npm run seed markets    - Seed markets');
+        logger.log('  npm run seed categories - Seed product categories');
+        logger.log('  npm run seed admins:list - List all admins');
+        break;
+    }
+
+    await app.close();
+    logger.log('Done!');
+    process.exit(0);
+  } catch (error) {
+    logger.error(`Seed failed: ${error.message}`);
+    process.exit(1);
+  }
+}
+
+bootstrap();
+export enum MarketType {
+  TRADITIONAL_MARKET = 'traditional_market',
+  SHOPPING_MALL = 'shopping_mall',
+  PLAZA = 'plaza',
+  SHOPPING_COMPLEX = 'shopping_complex',
+  STREET_MARKET = 'street_market',
+}
+export enum ProductStatus {
+  DRAFT = 'draft',
+  PENDING = 'pending',
+  APPROVED = 'approved',
+  REJECTED = 'rejected',
+  OUT_OF_STOCK = 'out_of_stock',
+  DISCONTINUED = 'discontinued',
+}
+
+export enum ProductType {
+  SALE = 'sale',
+  LEASE = 'lease',
+  RENT = 'rent',
+  SERVICE = 'service',
+}
+export enum Role {
+  USER = 'user',
+  VENDOR = 'vendor',
+  ADMIN = 'admin',
+  SUPER_ADMIN = 'super_admin',
+}
+export enum VendorType {
+  MARKET_SHOP = 'market_shop',
+  MALL_SHOP = 'mall_shop',
+  HOME_BASED = 'home_based',
+  STREET_SHOP = 'street_shop',
+  ONLINE_ONLY = 'online_only',
+}
+import {
+  ExceptionFilter,
+  Catch,
+  ArgumentsHost,
+  HttpException,
+  HttpStatus,
+} from '@nestjs/common';
+import { Request, Response } from 'express';
+
+@Catch()
+export class HttpExceptionFilter implements ExceptionFilter {
+  catch(exception: unknown, host: ArgumentsHost) {
+    const ctx = host.switchToHttp();
+    const response = ctx.getResponse<Response>();
+    const request = ctx.getRequest<Request>();
+
+    let status = HttpStatus.INTERNAL_SERVER_ERROR;
+    let message = 'Internal server error';
+    let errors: any = null;
+
+    if (exception instanceof HttpException) {
+      status = exception.getStatus();
+      const exceptionResponse = exception.getResponse();
+
+      if (typeof exceptionResponse === 'string') {
+        message = exceptionResponse;
+      } else if (typeof exceptionResponse === 'object') {
+        const responseObj = exceptionResponse as any;
+        message = responseObj.message || message;
+        errors = responseObj.errors || null;
+      }
+    } else if (exception instanceof Error) {
+      message = exception.message;
+    }
+
+    response.status(status).json({
+      success: false,
+      statusCode: status,
+      message: Array.isArray(message) ? message[0] : message,
+      errors: errors,
+      timestamp: new Date().toISOString(),
+      path: request.url,
+    });
+  }
+}
+import {
+  Injectable,
+  NestInterceptor,
+  ExecutionContext,
+  CallHandler,
+} from '@nestjs/common';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
+
+export interface Response<T> {
+  success: boolean;
+  data: T;
+  message?: string;
+  timestamp: string;
+}
+
+@Injectable()
+export class TransformInterceptor<T>
+  implements NestInterceptor<T, Response<T>>
+{
+  intercept(
+    context: ExecutionContext,
+    next: CallHandler,
+  ): Observable<Response<T>> {
+    return next.handle().pipe(
+      map((data) => ({
+        success: true,
+        data: data,
+        message: 'Operation successful',
+        timestamp: new Date().toISOString(),
+      })),
+    );
+  }
+}
+export interface GeoLocation {
+  type: 'Point';
+  coordinates: [number, number]; // [longitude, latitude]
+}
+
+export interface Address {
+  street?: string;
+  landmark?: string;
+  city: string;
+  state: string;
+  country: string;
+  postalCode?: string;
+}
+
+export interface BankDetails {
+  bankName: string;
+  accountName: string;
+  accountNumber: string;
+  bankCode?: string;
+}
+
+export interface ContactDetails {
+  phone: string;
+  alternatePhone?: string;
+  email?: string;
+  whatsapp?: string;
+  instagram?: string;
+  facebook?: string;
+  twitter?: string;
+  website?: string;
+}
+
+export interface ShopImages {
+  entrancePhoto?: string;
+  logo?: string;
+  layoutMap?: string;
+  additionalImages?: string[];
+}
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import * as bcrypt from 'bcryptjs';
+import { User } from '../../users/schemas/user.schema';
+import { Role } from '../../common/enums/role.enum';
+
+export interface AdminSeedData {
+  firstName: string;
+  lastName: string;
+  email: string;
+  password: string;
+  phone: string;
+  role: Role;
+}
+
+@Injectable()
+export class AdminSeeder {
+  private readonly logger = new Logger(AdminSeeder.name);
+
+  constructor(@InjectModel(User.name) private userModel: Model<User>) {}
+
+  private getDefaultAdmins(): AdminSeedData[] {
+    return [
+      {
+        firstName: 'Super',
+        lastName: 'Admin',
+        email: 'superadmin@sureshops.com',
+        password: 'SuperAdmin@123!',
+        phone: '08000000001',
+        role: Role.SUPER_ADMIN,
+      },
+      {
+        firstName: 'Admin',
+        lastName: 'User',
+        email: 'admin@sureshops.com',
+        password: 'Admin@123!',
+        phone: '08000000002',
+        role: Role.ADMIN,
+      },
+      {
+        firstName: 'Test',
+        lastName: 'Vendor',
+        email: 'vendor@sureshops.com',
+        password: 'Vendor@123!',
+        phone: '08000000003',
+        role: Role.VENDOR,
+      },
+      {
+        firstName: 'Test',
+        lastName: 'User',
+        email: 'user@sureshops.com',
+        password: 'User@123!',
+        phone: '08000000004',
+        role: Role.USER,
+      },
+    ];
+  }
+
+  async seed(): Promise<void> {
+    this.logger.log('Starting admin seeder...');
+
+    const admins = this.getDefaultAdmins();
+
+    for (const admin of admins) {
+      try {
+        const exists = await this.userModel.findOne({ email: admin.email.toLowerCase() });
+
+        if (exists) {
+          this.logger.warn(`User already exists: ${admin.email}`);
+          continue;
+        }
+
+        const hashedPassword = await bcrypt.hash(admin.password, 12);
+
+        await this.userModel.create({
+          firstName: admin.firstName,
+          lastName: admin.lastName,
+          email: admin.email.toLowerCase(),
+          password: hashedPassword,
+          phone: admin.phone,
+          role: admin.role,
+          isActive: true,
+          isEmailVerified: true,
+        });
+
+        this.logger.log(`Created ${admin.role}: ${admin.email}`);
+      } catch (error) {
+        this.logger.error(`Failed to create ${admin.email}: ${error.message}`);
+      }
+    }
+
+    this.logger.log('Admin seeder completed!');
+  }
+
+  async seedCustomAdmin(data: AdminSeedData): Promise<User> {
+    const exists = await this.userModel.findOne({ email: data.email.toLowerCase() });
+
+    if (exists) {
+      throw new Error(`User already exists: ${data.email}`);
+    }
+
+    const hashedPassword = await bcrypt.hash(data.password, 12);
+
+    const user = await this.userModel.create({
+      firstName: data.firstName,
+      lastName: data.lastName,
+      email: data.email.toLowerCase(),
+      password: hashedPassword,
+      phone: data.phone,
+      role: data.role,
+      isActive: true,
+      isEmailVerified: true,
+    });
+
+    this.logger.log(`Created custom admin: ${data.email}`);
+    return user;
+  }
+
+  async removeSeededAdmins(): Promise<void> {
+    const admins = this.getDefaultAdmins();
+    const emails = admins.map((a) => a.email.toLowerCase());
+
+    await this.userModel.deleteMany({ email: { $in: emails } });
+    this.logger.log('Removed all seeded admins');
+  }
+
+  async listAdmins(): Promise<User[]> {
+    return this.userModel
+      .find({ role: { $in: [Role.ADMIN, Role.SUPER_ADMIN] } })
+      .select('-password')
+      .sort({ createdAt: -1 });
+  }
+}
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Area } from '../../areas/schemas/area.schema';
+import { State } from '../../states/schemas/state.schema';
+
+@Injectable()
+export class AreasSeeder {
+  private readonly logger = new Logger(AreasSeeder.name);
+
+  constructor(
+    @InjectModel(Area.name) private areaModel: Model<Area>,
+    @InjectModel(State.name) private stateModel: Model<State>,
+  ) {}
+
+  private getAreasData() {
+    return {
+      LA: [
+        { name: 'Ikeja', localGovernment: 'Ikeja', coordinates: [3.3517, 6.5963] },
+        { name: 'Lekki', localGovernment: 'Eti-Osa', coordinates: [3.4746, 6.4698] },
+        { name: 'Victoria Island', localGovernment: 'Eti-Osa', coordinates: [3.4219, 6.4281] },
+        { name: 'Surulere', localGovernment: 'Surulere', coordinates: [3.3569, 6.4969] },
+        { name: 'Yaba', localGovernment: 'Yaba', coordinates: [3.3792, 6.5097] },
+        { name: 'Lagos Island', localGovernment: 'Lagos Island', coordinates: [3.3903, 6.4549] },
+        { name: 'Ikoyi', localGovernment: 'Eti-Osa', coordinates: [3.4373, 6.4500] },
+        { name: 'Ajah', localGovernment: 'Eti-Osa', coordinates: [3.5777, 6.4698] },
+        { name: 'Festac', localGovernment: 'Amuwo-Odofin', coordinates: [3.2833, 6.4667] },
+        { name: 'Oshodi', localGovernment: 'Oshodi-Isolo', coordinates: [3.3408, 6.5564] },
+        { name: 'Maryland', localGovernment: 'Kosofe', coordinates: [3.3681, 6.5714] },
+        { name: 'Gbagada', localGovernment: 'Kosofe', coordinates: [3.3922, 6.5539] },
+        { name: 'Magodo', localGovernment: 'Kosofe', coordinates: [3.3833, 6.6167] },
+        { name: 'Ogba', localGovernment: 'Ikeja', coordinates: [3.3425, 6.6183] },
+        { name: 'Ikorodu', localGovernment: 'Ikorodu', coordinates: [3.5100, 6.6194] },
+      ],
+      FC: [
+        { name: 'Garki', localGovernment: 'AMAC', coordinates: [7.4892, 9.0312] },
+        { name: 'Wuse', localGovernment: 'AMAC', coordinates: [7.4675, 9.0678] },
+        { name: 'Maitama', localGovernment: 'AMAC', coordinates: [7.4925, 9.0881] },
+        { name: 'Asokoro', localGovernment: 'AMAC', coordinates: [7.5306, 9.0531] },
+        { name: 'Gwarinpa', localGovernment: 'Bwari', coordinates: [7.4000, 9.1167] },
+        { name: 'Kubwa', localGovernment: 'Bwari', coordinates: [7.3167, 9.1500] },
+        { name: 'Lugbe', localGovernment: 'AMAC', coordinates: [7.3833, 8.9833] },
+        { name: 'Nyanya', localGovernment: 'Nasarawa', coordinates: [7.5500, 9.0167] },
+        { name: 'Jabi', localGovernment: 'AMAC', coordinates: [7.4247, 9.0728] },
+        { name: 'Utako', localGovernment: 'AMAC', coordinates: [7.4397, 9.0764] },
+      ],
+      RI: [
+        { name: 'Port Harcourt', localGovernment: 'Port Harcourt', coordinates: [7.0134, 4.8156] },
+        { name: 'GRA Phase 1', localGovernment: 'Obio-Akpor', coordinates: [6.9903, 4.8239] },
+        { name: 'GRA Phase 2', localGovernment: 'Obio-Akpor', coordinates: [6.9850, 4.8350] },
+        { name: 'Rumuola', localGovernment: 'Obio-Akpor', coordinates: [6.9939, 4.8447] },
+        { name: 'Rumuokwuta', localGovernment: 'Obio-Akpor', coordinates: [6.9917, 4.8553] },
+        { name: 'Trans Amadi', localGovernment: 'Obio-Akpor', coordinates: [7.0333, 4.7833] },
+        { name: 'Elelenwo', localGovernment: 'Obio-Akpor', coordinates: [7.0500, 4.8333] },
+        { name: 'Choba', localGovernment: 'Obio-Akpor', coordinates: [6.9167, 4.8833] },
+      ],
+      KN: [
+        { name: 'Kano Municipal', localGovernment: 'Kano Municipal', coordinates: [8.5200, 12.0000] },
+        { name: 'Sabon Gari', localGovernment: 'Fagge', coordinates: [8.5167, 11.9833] },
+        { name: 'Tarauni', localGovernment: 'Tarauni', coordinates: [8.5333, 11.9667] },
+        { name: 'Nassarawa', localGovernment: 'Nassarawa', coordinates: [8.5500, 11.9500] },
+        { name: 'Gwale', localGovernment: 'Gwale', coordinates: [8.5000, 12.0167] },
+      ],
+      OY: [
+        { name: 'Ibadan North', localGovernment: 'Ibadan North', coordinates: [3.9000, 7.4000] },
+        { name: 'Ibadan South', localGovernment: 'Ibadan South East', coordinates: [3.8833, 7.3667] },
+        { name: 'Bodija', localGovernment: 'Ibadan North', coordinates: [3.9167, 7.4167] },
+        { name: 'Challenge', localGovernment: 'Ibadan South East', coordinates: [3.8500, 7.3833] },
+        { name: 'Ring Road', localGovernment: 'Ibadan South West', coordinates: [3.8667, 7.3833] },
+        { name: 'Dugbe', localGovernment: 'Ibadan North West', coordinates: [3.8833, 7.3833] },
+      ],
+    };
+  }
+
+  async seed(): Promise<Area[]> {
+    this.logger.log('Seeding areas...');
+    const areasData = this.getAreasData();
+    const createdAreas: Area[] = [];
+
+    for (const [stateCode, areas] of Object.entries(areasData)) {
+      const state = await this.stateModel.findOne({ code: stateCode });
+      if (!state) {
+        this.logger.warn(`State not found: ${stateCode}`);
+        continue;
+      }
+
+      for (const areaData of areas) {
+        const exists = await this.areaModel.findOne({
+          name: areaData.name,
+          stateId: state._id,
+        });
+
+        if (!exists) {
+          const area = await this.areaModel.create({
+            name: areaData.name,
+            stateId: state._id,
+            localGovernment: areaData.localGovernment,
+            location: {
+              type: 'Point',
+              coordinates: areaData.coordinates,
+            },
+            isActive: true,
+          });
+          createdAreas.push(area);
+          this.logger.log(`Created area: ${areaData.name} in ${state.name}`);
+        }
+      }
+    }
+
+    this.logger.log(`Areas seeding complete. Created ${createdAreas.length} areas.`);
+    return createdAreas;
+  }
+}
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { CatalogItem } from '../../catalog/schemas/catalog-item.schema';
+
+@Injectable()
+export class CategoriesSeeder {
+  private readonly logger = new Logger(CategoriesSeeder.name);
+
+  constructor(
+    @InjectModel(CatalogItem.name) private catalogModel: Model<CatalogItem>,
+  ) {}
+
+  private getCategories() {
+    return [
+      {
+        category: 'Electronics',
+        subcategories: ['Phones', 'Laptops', 'TVs', 'Audio', 'Cameras', 'Accessories', 'Gaming'],
+        items: [
+          { name: 'iPhone 15 Pro Max', brand: 'Apple', tags: ['smartphone', 'apple', 'ios'] },
+          { name: 'iPhone 15 Pro', brand: 'Apple', tags: ['smartphone', 'apple', 'ios'] },
+          { name: 'iPhone 15', brand: 'Apple', tags: ['smartphone', 'apple', 'ios'] },
+          { name: 'Samsung Galaxy S24 Ultra', brand: 'Samsung', tags: ['smartphone', 'android', 'samsung'] },
+          { name: 'Samsung Galaxy S24', brand: 'Samsung', tags: ['smartphone', 'android'] },
+          { name: 'MacBook Pro 16', brand: 'Apple', tags: ['laptop', 'apple', 'macbook'] },
+          { name: 'MacBook Air M3', brand: 'Apple', tags: ['laptop', 'apple', 'macbook'] },
+          { name: 'HP Pavilion', brand: 'HP', tags: ['laptop', 'windows'] },
+          { name: 'Dell XPS 15', brand: 'Dell', tags: ['laptop', 'windows'] },
+          { name: 'PlayStation 5', brand: 'Sony', tags: ['gaming', 'console', 'ps5'] },
+          { name: 'Xbox Series X', brand: 'Microsoft', tags: ['gaming', 'console', 'xbox'] },
+          { name: 'Nintendo Switch', brand: 'Nintendo', tags: ['gaming', 'console'] },
+          { name: 'AirPods Pro', brand: 'Apple', tags: ['audio', 'earbuds', 'wireless'] },
+          { name: 'Sony WH-1000XM5', brand: 'Sony', tags: ['audio', 'headphones', 'wireless'] },
+          { name: 'Samsung 55" QLED TV', brand: 'Samsung', tags: ['tv', 'smart tv'] },
+          { name: 'LG 65" OLED TV', brand: 'LG', tags: ['tv', 'smart tv', 'oled'] },
+        ],
+      },
+      {
+        category: 'Fashion',
+        subcategories: ['Men', 'Women', 'Kids', 'Shoes', 'Bags', 'Accessories', 'Jewelry'],
+        items: [
+          { name: 'Nike Air Jordan 1', brand: 'Nike', tags: ['shoes', 'sneakers', 'jordan'] },
+          { name: 'Adidas Yeezy Boost 350', brand: 'Adidas', tags: ['shoes', 'sneakers', 'yeezy'] },
+          { name: 'Louis Vuitton Neverfull', brand: 'Louis Vuitton', tags: ['bag', 'luxury'] },
+          { name: 'Gucci GG Marmont', brand: 'Gucci', tags: ['bag', 'luxury'] },
+          { name: 'Rolex Submariner', brand: 'Rolex', tags: ['watch', 'luxury'] },
+          { name: 'Apple Watch Series 9', brand: 'Apple', tags: ['watch', 'smartwatch'] },
+        ],
+      },
+      {
+        category: 'Home & Garden',
+        subcategories: ['Furniture', 'Kitchen', 'Bedroom', 'Bathroom', 'Garden', 'Decor'],
+        items: [
+          { name: 'Dyson V15 Vacuum', brand: 'Dyson', tags: ['appliance', 'cleaning'] },
+          { name: 'Samsung French Door Refrigerator', brand: 'Samsung', tags: ['appliance', 'kitchen'] },
+          { name: 'LG Washing Machine', brand: 'LG', tags: ['appliance', 'laundry'] },
+          { name: 'KitchenAid Stand Mixer', brand: 'KitchenAid', tags: ['appliance', 'kitchen', 'baking'] },
+        ],
+      },
+      {
+        category: 'Health & Beauty',
+        subcategories: ['Skincare', 'Makeup', 'Haircare', 'Fragrance', 'Personal Care', 'Supplements'],
+        items: [
+          { name: 'La Mer Moisturizing Cream', brand: 'La Mer', tags: ['skincare', 'luxury'] },
+          { name: 'Chanel No. 5', brand: 'Chanel', tags: ['fragrance', 'perfume'] },
+          { name: 'Dior Sauvage', brand: 'Dior', tags: ['fragrance', 'cologne'] },
+          { name: 'MAC Ruby Woo Lipstick', brand: 'MAC', tags: ['makeup', 'lipstick'] },
+        ],
+      },
+      {
+        category: 'Sports & Outdoors',
+        subcategories: ['Fitness', 'Outdoor', 'Team Sports', 'Water Sports', 'Cycling'],
+        items: [
+          { name: 'Peloton Bike+', brand: 'Peloton', tags: ['fitness', 'cycling', 'exercise'] },
+          { name: 'Nike Dri-FIT Running Shoes', brand: 'Nike', tags: ['shoes', 'running', 'sports'] },
+          { name: 'Adidas Football', brand: 'Adidas', tags: ['football', 'soccer', 'ball'] },
+        ],
+      },
+    ];
+  }
+
+  async seed(): Promise<CatalogItem[]> {
+    this.logger.log('Seeding categories and catalog items...');
+    const categories = this.getCategories();
+    const createdItems: CatalogItem[] = [];
+
+    for (const cat of categories) {
+      for (const item of cat.items) {
+        const exists = await this.catalogModel.findOne({ name: item.name });
+        if (!exists) {
+          const catalogItem = await this.catalogModel.create({
+            name: item.name,
+            brand: item.brand,
+            category: cat.category,
+            tags: item.tags,
+            isActive: true,
+          });
+          createdItems.push(catalogItem);
+          this.logger.log(`Created catalog item: ${item.name}`);
+        }
+      }
+    }
+
+    this.logger.log(`Categories seeding complete. Created ${createdItems.length} items.`);
+    return createdItems;
+  }
+}
+export * from './admin.seeder';
+export * from './states.seeder';
+export * from './areas.seeder';
+export * from './markets.seeder';
+export * from './categories.seeder';
+export * from './master.seeder';
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Market } from '../../markets/schemas/market.schema';
+import { Area } from '../../areas/schemas/area.schema';
+import { State } from '../../states/schemas/state.schema';
+import { MarketType } from '../../common/enums/market-type.enum';
+
+interface MarketSeedData {
+  name: string;
+  type: MarketType;
+  address: string;
+  landmark?: string;
+  openingTime: string;
+  closingTime: string;
+  operatingDays?: string[];
+  coordinates?: [number, number];  // ✅ Optional real coordinates
+}
+
+interface LocationSeedData {
+  stateCode: string;
+  areaName: string;
+  markets: MarketSeedData[];
+}
+
+@Injectable()
+export class MarketsSeeder {
+  private readonly logger = new Logger(MarketsSeeder.name);
+
+  constructor(
+    @InjectModel(Market.name) private marketModel: Model<Market>,
+    @InjectModel(Area.name) private areaModel: Model<Area>,
+    @InjectModel(State.name) private stateModel: Model<State>,
+  ) {}
+
+  private getMarketsData(): LocationSeedData[] {
+    return [
+      // Lagos Markets
+      {
+        stateCode: 'LA',
+        areaName: 'Ikeja',
+        markets: [
+          {
+            name: 'Computer Village',
+            type: MarketType.TRADITIONAL_MARKET,
+            address: 'Ikeja, Lagos',
+            landmark: 'Near Ikeja City Mall',
+            openingTime: '08:00',
+            closingTime: '18:00',
+            operatingDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+            coordinates: [3.3470, 6.6018],    // ✅ [longitude, latitude]
+          },
+          {
+            name: 'Ikeja City Mall',
+            type: MarketType.SHOPPING_MALL,
+            address: 'Alausa, Ikeja, Lagos',
+            landmark: 'Opposite Lagos State Secretariat',
+            openingTime: '09:00',
+            closingTime: '21:00',
+            operatingDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+            coordinates: [3.3515, 6.6105],
+          },
+        ],
+      },
+      {
+        stateCode: 'LA',
+        areaName: 'Lekki',
+        markets: [
+          {
+            name: 'The Palms Shopping Mall',
+            type: MarketType.SHOPPING_MALL,
+            address: 'Lekki Phase 1, Lagos',
+            landmark: 'Lekki Expressway',
+            openingTime: '09:00',
+            closingTime: '21:00',
+            operatingDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+            coordinates: [3.4653, 6.4381],
+          },
+          {
+            name: 'Circle Mall Lekki',
+            type: MarketType.SHOPPING_MALL,
+            address: 'Lekki, Lagos',
+            openingTime: '09:00',
+            closingTime: '21:00',
+            coordinates: [3.5400, 6.4437],
+          },
+        ],
+      },
+      {
+        stateCode: 'LA',
+        areaName: 'Victoria Island',
+        markets: [
+          {
+            name: 'Mega Plaza',
+            type: MarketType.PLAZA,
+            address: 'Victoria Island, Lagos',
+            openingTime: '08:00',
+            closingTime: '20:00',
+            coordinates: [3.4226, 6.4281],
+          },
+        ],
+      },
+      {
+        stateCode: 'LA',
+        areaName: 'Lagos Island',
+        markets: [
+          {
+            name: 'Balogun Market',
+            type: MarketType.TRADITIONAL_MARKET,
+            address: 'Lagos Island',
+            landmark: 'Near Tinubu Square',
+            openingTime: '06:00',
+            closingTime: '19:00',
+            operatingDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+            coordinates: [3.3903, 6.4530],
+          },
+          {
+            name: 'Idumota Market',
+            type: MarketType.TRADITIONAL_MARKET,
+            address: 'Lagos Island',
+            openingTime: '06:00',
+            closingTime: '19:00',
+            coordinates: [3.3925, 6.4560],
+          },
+        ],
+      },
+      {
+        stateCode: 'LA',
+        areaName: 'Yaba',
+        markets: [
+          {
+            name: 'Yaba Market',
+            type: MarketType.TRADITIONAL_MARKET,
+            address: 'Yaba, Lagos',
+            openingTime: '07:00',
+            closingTime: '18:00',
+            coordinates: [3.3750, 6.5090],
+          },
+          {
+            name: 'Tejuosho Market',
+            type: MarketType.TRADITIONAL_MARKET,
+            address: 'Yaba, Lagos',
+            openingTime: '07:00',
+            closingTime: '18:00',
+            coordinates: [3.3725, 6.5115],
+          },
+        ],
+      },
+      // FCT Markets
+      {
+        stateCode: 'FC',
+        areaName: 'Wuse',
+        markets: [
+          {
+            name: 'Wuse Market',
+            type: MarketType.TRADITIONAL_MARKET,
+            address: 'Wuse Zone 5, Abuja',
+            openingTime: '07:00',
+            closingTime: '18:00',
+            coordinates: [7.4760, 9.0700],
+          },
+          {
+            name: 'Ceddi Plaza',
+            type: MarketType.PLAZA,
+            address: 'Wuse Zone 4, Abuja',
+            openingTime: '09:00',
+            closingTime: '20:00',
+            coordinates: [7.4800, 9.0650],
+          },
+        ],
+      },
+      {
+        stateCode: 'FC',
+        areaName: 'Garki',
+        markets: [
+          {
+            name: 'Garki Model Market',
+            type: MarketType.TRADITIONAL_MARKET,
+            address: 'Area 10, Garki, Abuja',
+            openingTime: '07:00',
+            closingTime: '18:00',
+            coordinates: [7.4905, 9.0430],
+          },
+        ],
+      },
+      {
+        stateCode: 'FC',
+        areaName: 'Jabi',
+        markets: [
+          {
+            name: 'Jabi Lake Mall',
+            type: MarketType.SHOPPING_MALL,
+            address: 'Jabi District, Abuja',
+            openingTime: '09:00',
+            closingTime: '21:00',
+            operatingDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+            coordinates: [7.4150, 9.0720],
+          },
+        ],
+      },
+      // Rivers Markets
+      {
+        stateCode: 'RI',
+        areaName: 'Port Harcourt',
+        markets: [
+          {
+            name: 'Mile 1 Market',
+            type: MarketType.TRADITIONAL_MARKET,
+            address: 'Mile 1, Port Harcourt',
+            openingTime: '07:00',
+            closingTime: '18:00',
+            coordinates: [7.0134, 4.7753],
+          },
+          {
+            name: 'Mile 3 Market',
+            type: MarketType.TRADITIONAL_MARKET,
+            address: 'Mile 3, Port Harcourt',
+            openingTime: '07:00',
+            closingTime: '18:00',
+            coordinates: [7.0200, 4.7850],
+          },
+          {
+            name: 'Port Harcourt Mall',
+            type: MarketType.SHOPPING_MALL,
+            address: 'Azikiwe Road, Port Harcourt',
+            openingTime: '09:00',
+            closingTime: '21:00',
+            coordinates: [7.0074, 4.7731],
+          },
+        ],
+      },
+      // Kano Markets
+      {
+        stateCode: 'KN',
+        areaName: 'Kano Municipal',
+        markets: [
+          {
+            name: 'Kurmi Market',
+            type: MarketType.TRADITIONAL_MARKET,
+            address: 'Kano City',
+            openingTime: '07:00',
+            closingTime: '18:00',
+            coordinates: [8.5167, 12.0000],
+          },
+          {
+            name: 'Singer Market',
+            type: MarketType.TRADITIONAL_MARKET,
+            address: 'Kano City',
+            openingTime: '07:00',
+            closingTime: '18:00',
+            coordinates: [8.5200, 11.9960],
+          },
+        ],
+      },
+      {
+        stateCode: 'KN',
+        areaName: 'Sabon Gari',
+        markets: [
+          {
+            name: 'Sabon Gari Market',
+            type: MarketType.TRADITIONAL_MARKET,
+            address: 'Sabon Gari, Kano',
+            openingTime: '07:00',
+            closingTime: '18:00',
+            coordinates: [8.5230, 11.9820],
+          },
+        ],
+      },
+      // Oyo Markets
+      {
+        stateCode: 'OY',
+        areaName: 'Ibadan North',
+        markets: [
+          {
+            name: 'Bodija Market',
+            type: MarketType.TRADITIONAL_MARKET,
+            address: 'Bodija, Ibadan',
+            openingTime: '06:00',
+            closingTime: '18:00',
+            coordinates: [3.9100, 7.4167],
+          },
+          {
+            name: 'Palms Mall Ibadan',
+            type: MarketType.SHOPPING_MALL,
+            address: 'Ring Road, Ibadan',
+            openingTime: '09:00',
+            closingTime: '21:00',
+            coordinates: [3.8950, 7.3800],
+          },
+        ],
+      },
+      {
+        stateCode: 'OY',
+        areaName: 'Dugbe',
+        markets: [
+          {
+            name: 'Dugbe Market',
+            type: MarketType.TRADITIONAL_MARKET,
+            address: 'Dugbe, Ibadan',
+            openingTime: '06:00',
+            closingTime: '18:00',
+            coordinates: [3.8780, 7.3880],
+          },
+        ],
+      },
+    ];
+  }
+
+  async seed(): Promise<Market[]> {
+    this.logger.log('Seeding markets...');
+    const marketsData = this.getMarketsData();
+    const createdMarkets: Market[] = [];
+
+    for (const location of marketsData) {
+      const state = await this.stateModel.findOne({ code: location.stateCode });
+      if (!state) continue;
+
+      const area = await this.areaModel.findOne({
+        name: location.areaName,
+        stateId: state._id,
+      });
+      if (!area) continue;
+
+      for (const marketData of location.markets) {
+        const exists = await this.marketModel.findOne({
+          name: marketData.name,
+          areaId: area._id,
+        });
+
+        if (!exists) {
+          // ✅ Build document — only include location when coordinates exist
+          const marketDoc: Record<string, any> = {
+            name: marketData.name,
+            type: marketData.type,
+            stateId: state._id,
+            areaId: area._id,
+            address: marketData.address,
+            landmark: marketData.landmark,
+            openingTime: marketData.openingTime,
+            closingTime: marketData.closingTime,
+            operatingDays: marketData.operatingDays || [
+              'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
+            ],
+            isActive: true,
+          };
+
+          // ✅ Only set location when we have real coordinates
+          if (marketData.coordinates) {
+            marketDoc.location = {
+              type: 'Point',
+              coordinates: marketData.coordinates,
+            };
+          }
+
+          const market = await this.marketModel.create(marketDoc);
+          createdMarkets.push(market);
+          this.logger.log(`Created market: ${marketData.name}`);
+        }
+      }
+    }
+
+    this.logger.log(`Markets seeding complete. Created ${createdMarkets.length} markets.`);
+    return createdMarkets;
+  }
+}
+import { Injectable, Logger } from '@nestjs/common';
+import { AdminSeeder } from './admin.seeder';
+import { StatesSeeder } from './states.seeder';
+import { AreasSeeder } from './areas.seeder';
+import { MarketsSeeder } from './markets.seeder';
+import { CategoriesSeeder } from './categories.seeder';
+
+@Injectable()
+export class MasterSeeder {
+  private readonly logger = new Logger(MasterSeeder.name);
+
+  constructor(
+    private adminSeeder: AdminSeeder,
+    private statesSeeder: StatesSeeder,
+    private areasSeeder: AreasSeeder,
+    private marketsSeeder: MarketsSeeder,
+    private categoriesSeeder: CategoriesSeeder,
+  ) {}
+
+  async seedAll(): Promise<void> {
+    this.logger.log('Starting master seed...');
+
+    try {
+      // Seed in order of dependencies
+      await this.statesSeeder.seed();
+      await this.areasSeeder.seed();
+      await this.marketsSeeder.seed();
+      await this.categoriesSeeder.seed();
+      await this.adminSeeder.seed();
+
+      this.logger.log('Master seed completed successfully!');
+    } catch (error) {
+      this.logger.error(`Master seed failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async seedLocations(): Promise<void> {
+    await this.statesSeeder.seed();
+    await this.areasSeeder.seed();
+    await this.marketsSeeder.seed();
+  }
+
+  async seedUsers(): Promise<void> {
+    await this.adminSeeder.seed();
+  }
+
+  async seedCatalog(): Promise<void> {
+    await this.categoriesSeeder.seed();
+  }
+}
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { State } from '../../states/schemas/state.schema';
+
+@Injectable()
+export class StatesSeeder {
+  private readonly logger = new Logger(StatesSeeder.name);
+
+  constructor(@InjectModel(State.name) private stateModel: Model<State>) {}
+
+  private getNigerianStates() {
+    return [
+      { name: 'Abia', code: 'AB', capital: 'Umuahia', coordinates: [7.5248, 5.5320] },
+      { name: 'Adamawa', code: 'AD', capital: 'Yola', coordinates: [12.4634, 9.3265] },
+      { name: 'Akwa Ibom', code: 'AK', capital: 'Uyo', coordinates: [7.9304, 5.0377] },
+      { name: 'Anambra', code: 'AN', capital: 'Awka', coordinates: [7.0068, 6.2209] },
+      { name: 'Bauchi', code: 'BA', capital: 'Bauchi', coordinates: [9.8442, 10.3158] },
+      { name: 'Bayelsa', code: 'BY', capital: 'Yenagoa', coordinates: [6.2638, 4.9316] },
+      { name: 'Benue', code: 'BE', capital: 'Makurdi', coordinates: [8.5391, 7.7322] },
+      { name: 'Borno', code: 'BO', capital: 'Maiduguri', coordinates: [13.1510, 11.8333] },
+      { name: 'Cross River', code: 'CR', capital: 'Calabar', coordinates: [8.3417, 4.9757] },
+      { name: 'Delta', code: 'DE', capital: 'Asaba', coordinates: [6.7540, 6.1981] },
+      { name: 'Ebonyi', code: 'EB', capital: 'Abakaliki', coordinates: [8.1137, 6.3249] },
+      { name: 'Edo', code: 'ED', capital: 'Benin City', coordinates: [5.6145, 6.3350] },
+      { name: 'Ekiti', code: 'EK', capital: 'Ado-Ekiti', coordinates: [5.2194, 7.6256] },
+      { name: 'Enugu', code: 'EN', capital: 'Enugu', coordinates: [7.4951, 6.4584] },
+      { name: 'FCT', code: 'FC', capital: 'Abuja', coordinates: [7.4951, 9.0579] },
+      { name: 'Gombe', code: 'GO', capital: 'Gombe', coordinates: [11.1728, 10.2897] },
+      { name: 'Imo', code: 'IM', capital: 'Owerri', coordinates: [7.0352, 5.4836] },
+      { name: 'Jigawa', code: 'JI', capital: 'Dutse', coordinates: [9.3399, 11.7574] },
+      { name: 'Kaduna', code: 'KD', capital: 'Kaduna', coordinates: [7.4388, 10.5105] },
+      { name: 'Kano', code: 'KN', capital: 'Kano', coordinates: [8.5364, 11.9964] },
+      { name: 'Katsina', code: 'KT', capital: 'Katsina', coordinates: [7.6006, 13.0059] },
+      { name: 'Kebbi', code: 'KE', capital: 'Birnin Kebbi', coordinates: [4.1994, 12.4539] },
+      { name: 'Kogi', code: 'KO', capital: 'Lokoja', coordinates: [6.7429, 7.8023] },
+      { name: 'Kwara', code: 'KW', capital: 'Ilorin', coordinates: [4.5418, 8.4966] },
+      { name: 'Lagos', code: 'LA', capital: 'Ikeja', coordinates: [3.3792, 6.5244] },
+      { name: 'Nasarawa', code: 'NA', capital: 'Lafia', coordinates: [8.5200, 8.5200] },
+      { name: 'Niger', code: 'NI', capital: 'Minna', coordinates: [6.5569, 9.6139] },
+      { name: 'Ogun', code: 'OG', capital: 'Abeokuta', coordinates: [3.3515, 7.1604] },
+      { name: 'Ondo', code: 'ON', capital: 'Akure', coordinates: [5.1950, 7.2526] },
+      { name: 'Osun', code: 'OS', capital: 'Osogbo', coordinates: [4.5624, 7.7827] },
+      { name: 'Oyo', code: 'OY', capital: 'Ibadan', coordinates: [3.8963, 7.3775] },
+      { name: 'Plateau', code: 'PL', capital: 'Jos', coordinates: [8.8921, 9.8965] },
+      { name: 'Rivers', code: 'RI', capital: 'Port Harcourt', coordinates: [7.0134, 4.8156] },
+      { name: 'Sokoto', code: 'SO', capital: 'Sokoto', coordinates: [5.2476, 13.0533] },
+      { name: 'Taraba', code: 'TA', capital: 'Jalingo', coordinates: [11.3596, 8.8929] },
+      { name: 'Yobe', code: 'YO', capital: 'Damaturu', coordinates: [11.9610, 11.7480] },
+      { name: 'Zamfara', code: 'ZA', capital: 'Gusau', coordinates: [6.6542, 12.1628] },
+    ];
+  }
+
+  async seed(): Promise<State[]> {
+    this.logger.log('Seeding Nigerian states...');
+    const states = this.getNigerianStates();
+    const createdStates: State[] = [];
+
+    for (const stateData of states) {
+      const exists = await this.stateModel.findOne({ code: stateData.code });
+      if (!exists) {
+        const state = await this.stateModel.create({
+          name: stateData.name,
+          code: stateData.code,
+          capital: stateData.capital,
+          location: {
+            type: 'Point',
+            coordinates: stateData.coordinates,
+          },
+          isActive: true,
+        });
+        createdStates.push(state);
+        this.logger.log(`Created state: ${stateData.name}`);
+      }
+    }
+
+    this.logger.log(`States seeding complete. Created ${createdStates.length} states.`);
+    return createdStates;
+  }
+
+  async getStateByCode(code: string): Promise<State | null> {
+    return this.stateModel.findOne({ code });
+  }
+}
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { User, UserSchema } from '../users/schemas/user.schema';
+import { State, StateSchema } from '../states/schemas/state.schema';
+import { Area, AreaSchema } from '../areas/schemas/area.schema';
+import { Market, MarketSchema } from '../markets/schemas/market.schema';
+import { CatalogItem, CatalogItemSchema } from '../catalog/schemas/catalog-item.schema';
+import {
+  AdminSeeder,
+  StatesSeeder,
+  AreasSeeder,
+  MarketsSeeder,
+  CategoriesSeeder,
+  MasterSeeder,
+} from './seeders';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([
+      { name: User.name, schema: UserSchema },
+      { name: State.name, schema: StateSchema },
+      { name: Area.name, schema: AreaSchema },
+      { name: Market.name, schema: MarketSchema },
+      { name: CatalogItem.name, schema: CatalogItemSchema },
+    ]),
+  ],
+  providers: [
+    AdminSeeder,
+    StatesSeeder,
+    AreasSeeder,
+    MarketsSeeder,
+    CategoriesSeeder,
+    MasterSeeder,
+  ],
+  exports: [
+    AdminSeeder,
+    StatesSeeder,
+    AreasSeeder,
+    MarketsSeeder,
+    CategoriesSeeder,
+    MasterSeeder,
+  ],
+})
+export class DatabaseModule {}
+import { IsEnum, IsMongoId } from 'class-validator';
+import { FavoriteType } from '../schemas/favorite.schema';
+
+export class CreateFavoriteDto {
+  @IsEnum(FavoriteType)
+  type: FavoriteType;
+
+  @IsMongoId()
+  itemId: string;
+}
+
+export class ToggleFavoriteDto {
+  @IsEnum(FavoriteType)
+  type: FavoriteType;
+
+  @IsMongoId()
+  itemId: string;
+}
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document, Types } from 'mongoose';
+
+export enum FavoriteType {
+  PRODUCT = 'product',
+  VENDOR = 'vendor',
+}
+
+@Schema({ timestamps: true })
+export class Favorite extends Document {
+  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  userId: Types.ObjectId;
+
+  @Prop({ type: String, enum: FavoriteType, required: true })
+  type: FavoriteType;
+
+  @Prop({ type: Types.ObjectId, refPath: 'type', required: true })
+  itemId: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'Product' })
+  productId?: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'Vendor' })
+  vendorId?: Types.ObjectId;
+}
+
+export const FavoriteSchema = SchemaFactory.createForClass(Favorite);
+
+FavoriteSchema.index({ userId: 1, type: 1, itemId: 1 }, { unique: true });
+FavoriteSchema.index({ userId: 1, type: 1 });
+import {
+  Controller,
+  Get,
+  Post,
+  Delete,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+  Request,
+} from '@nestjs/common';
+import { FavoritesService } from './favorites.service';
+import { CreateFavoriteDto, ToggleFavoriteDto } from './dto/create-favorite.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { FavoriteType } from './schemas/favorite.schema';
+
+@Controller('favorites')
+@UseGuards(JwtAuthGuard)
+export class FavoritesController {
+  constructor(private favoritesService: FavoritesService) {}
+
+  @Get()
+  getUserFavorites(@Request() req, @Query('type') type?: FavoriteType) {
+    return this.favoritesService.getUserFavorites(req.user.id, type);
+  }
+
+  @Get('products')
+  getFavoriteProducts(@Request() req) {
+    return this.favoritesService.getFavoriteProducts(req.user.id);
+  }
+
+  @Get('vendors')
+  getFavoriteVendors(@Request() req) {
+    return this.favoritesService.getFavoriteVendors(req.user.id);
+  }
+
+  @Get('count')
+  getFavoriteCount(@Request() req) {
+    return this.favoritesService.getFavoriteCount(req.user.id);
+  }
+
+  @Get('check/:type/:itemId')
+  checkIsFavorite(
+    @Request() req,
+    @Param('type') type: FavoriteType,
+    @Param('itemId') itemId: string,
+  ) {
+    return this.favoritesService.isFavorite(req.user.id, type, itemId);
+  }
+
+  @Post('check-multiple')
+  checkMultipleFavorites(
+    @Request() req,
+    @Body() items: { type: FavoriteType; itemId: string }[],
+  ) {
+    return this.favoritesService.checkFavorites(req.user.id, items);
+  }
+
+  @Post()
+  addFavorite(@Request() req, @Body() dto: CreateFavoriteDto) {
+    return this.favoritesService.addFavorite(req.user.id, dto);
+  }
+
+  @Post('toggle')
+  toggleFavorite(@Request() req, @Body() dto: ToggleFavoriteDto) {
+    return this.favoritesService.toggleFavorite(req.user.id, dto);
+  }
+
+  @Delete(':type/:itemId')
+  removeFavorite(
+    @Request() req,
+    @Param('type') type: FavoriteType,
+    @Param('itemId') itemId: string,
+  ) {
+    return this.favoritesService.removeFavorite(req.user.id, type, itemId);
+  }
+}
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { FavoritesController } from './favorites.controller';
+import { FavoritesService } from './favorites.service';
+import { Favorite, FavoriteSchema } from './schemas/favorite.schema';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([{ name: Favorite.name, schema: FavoriteSchema }]),
+  ],
+  controllers: [FavoritesController],
+  providers: [FavoritesService],
+  exports: [FavoritesService],
+})
+export class FavoritesModule {}
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Favorite, FavoriteType } from './schemas/favorite.schema';
+import { CreateFavoriteDto } from './dto/create-favorite.dto';
+
+@Injectable()
+export class FavoritesService {
+  constructor(
+    @InjectModel(Favorite.name) private favoriteModel: Model<Favorite>,
+  ) {}
+
+  async addFavorite(userId: string, dto: CreateFavoriteDto): Promise<Favorite> {
+    const existing = await this.favoriteModel.findOne({
+      userId,
+      type: dto.type,
+      itemId: dto.itemId,
+    });
+
+    if (existing) {
+      return existing;
+    }
+
+    const favoriteData: any = {
+      userId,
+      type: dto.type,
+      itemId: dto.itemId,
+    };
+
+    if (dto.type === FavoriteType.PRODUCT) {
+      favoriteData.productId = dto.itemId;
+    } else {
+      favoriteData.vendorId = dto.itemId;
+    }
+
+    return this.favoriteModel.create(favoriteData);
+  }
+
+  async removeFavorite(userId: string, type: FavoriteType, itemId: string): Promise<void> {
+    await this.favoriteModel.deleteOne({ userId, type, itemId });
+  }
+
+  async toggleFavorite(userId: string, dto: CreateFavoriteDto): Promise<{ isFavorite: boolean }> {
+    const existing = await this.favoriteModel.findOne({
+      userId,
+      type: dto.type,
+      itemId: dto.itemId,
+    });
+
+    if (existing) {
+      await this.favoriteModel.deleteOne({ _id: existing._id });
+      return { isFavorite: false };
+    }
+
+    await this.addFavorite(userId, dto);
+    return { isFavorite: true };
+  }
+
+  async getUserFavorites(
+    userId: string,
+    type?: FavoriteType,
+  ): Promise<Favorite[]> {
+    const query: any = { userId };
+    if (type) query.type = type;
+
+    return this.favoriteModel
+      .find(query)
+      .populate({
+        path: 'productId',
+        select: 'name price images category vendorId',
+        populate: {
+          path: 'vendorId',
+          select: 'businessName shopImages',
+        },
+      })
+      .populate({
+        path: 'vendorId',
+        select: 'businessName businessDescription shopImages rating totalProducts',
+      })
+      .sort({ createdAt: -1 });
+  }
+
+  async getFavoriteProducts(userId: string): Promise<Favorite[]> {
+    return this.getUserFavorites(userId, FavoriteType.PRODUCT);
+  }
+
+  async getFavoriteVendors(userId: string): Promise<Favorite[]> {
+    return this.getUserFavorites(userId, FavoriteType.VENDOR);
+  }
+
+  async isFavorite(userId: string, type: FavoriteType, itemId: string): Promise<boolean> {
+    const count = await this.favoriteModel.countDocuments({ userId, type, itemId });
+    return count > 0;
+  }
+
+  async checkFavorites(
+    userId: string,
+    items: { type: FavoriteType; itemId: string }[],
+  ): Promise<{ [key: string]: boolean }> {
+    const favorites = await this.favoriteModel.find({
+      userId,
+      $or: items.map((item) => ({ type: item.type, itemId: item.itemId })),
+    });
+
+    const result: { [key: string]: boolean } = {};
+    items.forEach((item) => {
+      const key = `${item.type}_${item.itemId}`;
+      result[key] = favorites.some(
+        (f) => f.type === item.type && f.itemId.toString() === item.itemId,
+      );
+    });
+
+    return result;
+  }
+
+  async getFavoriteCount(userId: string): Promise<{ products: number; vendors: number }> {
+    const [products, vendors] = await Promise.all([
+      this.favoriteModel.countDocuments({ userId, type: FavoriteType.PRODUCT }),
+      this.favoriteModel.countDocuments({ userId, type: FavoriteType.VENDOR }),
+    ]);
+    return { products, vendors };
+  }
+}
+import {
+  IsString,
+  IsOptional,
+  IsArray,
+  IsNumber,
+  IsMongoId,
+  IsEnum,
+  IsEmail,
+} from 'class-validator';
+import { MarketType } from '../../common/enums/market-type.enum';
+
+export class CreateMarketDto {
+  @IsString()
+  name: string;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @IsEnum(MarketType)
+  type: MarketType;
+
+  @IsMongoId()
+  stateId: string;
+
+  @IsMongoId()
+  areaId: string;
+
+  @IsString()
+  @IsOptional()
+  address?: string;
+
+  @IsString()
+  @IsOptional()
+  landmark?: string;
+
+  @IsArray()
+  @IsNumber({}, { each: true })
+  @IsOptional()
+  coordinates?: [number, number];
+
+  @IsString()
+  @IsOptional()
+  entrancePhoto?: string;
+
+  @IsString()
+  @IsOptional()
+  layoutMap?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  additionalPhotos?: string[];
+
+  @IsString()
+  @IsOptional()
+  openingTime?: string;
+
+  @IsString()
+  @IsOptional()
+  closingTime?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  operatingDays?: string[];
+
+  @IsString()
+  @IsOptional()
+  contactPhone?: string;
+
+  @IsEmail()
+  @IsOptional()
+  contactEmail?: string;
+}
+import { IsOptional, IsString, IsEnum, IsNumber, IsMongoId } from 'class-validator';
+import { Type } from 'class-transformer';
+import { MarketType } from '../../common/enums/market-type.enum';
+
+export class FilterMarketDto {
+  @IsOptional()
+  @IsMongoId()
+  stateId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  areaId?: string;
+
+  @IsOptional()
+  @IsEnum(MarketType)
+  type?: MarketType;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  longitude?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  latitude?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  maxDistance?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  page?: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  limit?: number = 20;
+}
+import {
+  IsString,
+  IsOptional,
+  IsArray,
+  IsNumber,
+  IsEnum,
+  IsEmail,
+  IsBoolean,
+} from 'class-validator';
+import { MarketType } from '../../common/enums/market-type.enum';
+
+export class UpdateMarketDto {
+  @IsString()
+  @IsOptional()
+  name?: string;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @IsEnum(MarketType)
+  @IsOptional()
+  type?: MarketType;
+
+  @IsString()
+  @IsOptional()
+  address?: string;
+
+  @IsString()
+  @IsOptional()
+  landmark?: string;
+
+  @IsArray()
+  @IsNumber({}, { each: true })
+  @IsOptional()
+  coordinates?: [number, number];
+
+  @IsString()
+  @IsOptional()
+  entrancePhoto?: string;
+
+  @IsString()
+  @IsOptional()
+  layoutMap?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  additionalPhotos?: string[];
+
+  @IsString()
+  @IsOptional()
+  openingTime?: string;
+
+  @IsString()
+  @IsOptional()
+  closingTime?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  operatingDays?: string[];
+
+  @IsString()
+  @IsOptional()
+  contactPhone?: string;
+
+  @IsEmail()
+  @IsOptional()
+  contactEmail?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  isActive?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  isVerified?: boolean;
+}
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document, Types, Schema as MongooseSchema } from 'mongoose';
+import { MarketType } from '../../common/enums/market-type.enum';
+
+@Schema({ timestamps: true })
+export class Market extends Document {
+  @Prop({ required: true })
+  name: string;
+
+  @Prop()
+  description?: string;
+
+  @Prop({ type: String, enum: MarketType, required: true })
+  type: MarketType;
+
+  @Prop({ type: Types.ObjectId, ref: 'State', required: true })
+  stateId: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'Area', required: true })
+  areaId: Types.ObjectId;
+
+  @Prop()
+  address?: string;
+
+  @Prop()
+  landmark?: string;
+
+  // ✅ FIX: Simple type declaration — schema defined below
+  @Prop({ type: Object })
+  location?: {
+    type: 'Point';
+    coordinates: [number, number];
+  };
+
+  @Prop()
+  entrancePhoto?: string;
+
+  @Prop()
+  layoutMap?: string;
+
+  @Prop({ type: [String], default: [] })
+  additionalPhotos?: string[];
+
+  @Prop()
+  openingTime?: string;
+
+  @Prop()
+  closingTime?: string;
+
+  @Prop({ type: [String] })
+  operatingDays?: string[];
+
+  @Prop()
+  contactPhone?: string;
+
+  @Prop()
+  contactEmail?: string;
+
+  @Prop({ default: 0 })
+  totalShops: number;
+
+  @Prop({ default: true })
+  isActive: boolean;
+
+  @Prop({ default: false })
+  isVerified: boolean;
+}
+
+export const MarketSchema = SchemaFactory.createForClass(Market);
+
+// ✅ FIX: Define the location path AFTER schema creation
+//         This gives us full control over the sub-schema
+MarketSchema.path('location', new MongooseSchema(
+  {
+    type: {
+      type: String,
+      enum: ['Point'],
+      required: true,
+    },
+    coordinates: {
+      type: [Number],
+      required: true,
+    },
+  },
+  { _id: false }
+));
+
+// ✅ Make location not required at the document level
+MarketSchema.path('location').required(false);
+
+// ✅ sparse: true — skips documents where location is absent
+MarketSchema.index({ location: '2dsphere' }, { sparse: true });
+MarketSchema.index({ stateId: 1, areaId: 1 });
+MarketSchema.index({ type: 1 });
+MarketSchema.index({ name: 'text', address: 'text' });
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import { MarketsService } from './markets.service';
+import { CreateMarketDto } from './dto/create-market.dto';
+import { UpdateMarketDto } from './dto/update-market.dto';
+import { FilterMarketDto } from './dto/filter-market.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { Role } from '../common/enums/role.enum';
+
+@Controller('markets')
+export class MarketsController {
+  constructor(private marketsService: MarketsService) {}
+
+  @Get()
+  findAll(@Query() filterDto: FilterMarketDto) {
+    return this.marketsService.findAll(filterDto);
+  }
+
+  @Get('area/:areaId')
+  findByArea(@Param('areaId') areaId: string) {
+    return this.marketsService.findByArea(areaId);
+  }
+
+  @Get('nearby')
+  findNearby(
+    @Query('longitude') longitude: number,
+    @Query('latitude') latitude: number,
+    @Query('distance') distance?: number,
+  ) {
+    return this.marketsService.findNearby(longitude, latitude, distance);
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string) {
+    return this.marketsService.findById(id);
+  }
+
+  @Post()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  create(@Body() dto: CreateMarketDto) {
+    return this.marketsService.create(dto);
+  }
+
+  @Put(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  update(@Param('id') id: string, @Body() dto: UpdateMarketDto) {
+    return this.marketsService.update(id, dto);
+  }
+
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SUPER_ADMIN)
+  delete(@Param('id') id: string) {
+    return this.marketsService.delete(id);
+  }
+}
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { MarketsService } from './markets.service';
+import { MarketsController } from './markets.controller';
+import { Market, MarketSchema } from './schemas/market.schema';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([{ name: Market.name, schema: MarketSchema }]),
+  ],
+  controllers: [MarketsController],
+  providers: [MarketsService],
+  exports: [MarketsService],
+})
+export class MarketsModule {}
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose';
+import { Market } from './schemas/market.schema';
+import { CreateMarketDto } from './dto/create-market.dto';
+import { UpdateMarketDto } from './dto/update-market.dto';
+import { FilterMarketDto } from './dto/filter-market.dto';
+
+@Injectable()
+export class MarketsService {
+  constructor(@InjectModel(Market.name) private marketModel: Model<Market>) {}
+
+  async create(dto: CreateMarketDto): Promise<Market> {
+    const marketData: any = { ...dto };
+    if (dto.coordinates) {
+      marketData.location = {
+        type: 'Point',
+        coordinates: dto.coordinates,
+      };
+    }
+    delete marketData.coordinates;
+    return this.marketModel.create(marketData);
+  }
+
+  async findAll(filterDto: FilterMarketDto): Promise<{
+    markets: Market[];
+    total: number;
+    page: number;
+    totalPages: number;
+  }> {
+    const { page = 1, limit = 20, stateId, areaId, type, search, longitude, latitude, maxDistance } = filterDto;
+
+    const query: Record<string, any> = { isActive: true };
+
+    // ✅ Convert string IDs to ObjectId
+    if (stateId) query.stateId = new Types.ObjectId(stateId);
+    if (areaId) query.areaId = new Types.ObjectId(areaId);
+    if (type) query.type = type;
+
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { address: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    if (longitude && latitude) {
+      query.location = {
+        $near: {
+          $geometry: {
+            type: 'Point',
+            coordinates: [longitude, latitude],
+          },
+          $maxDistance: (maxDistance || 10) * 1000,
+        },
+      };
+    }
+
+    const skip = (page - 1) * limit;
+    const [markets, total] = await Promise.all([
+      this.marketModel
+        .find(query)
+        .populate('stateId', 'name code')
+        .populate('areaId', 'name')
+        .skip(skip)
+        .limit(limit)
+        .sort({ createdAt: -1 }),
+      this.marketModel.countDocuments(query),
+    ]);
+
+    return {
+      markets,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async findById(id: string): Promise<Market> {
+    const market = await this.marketModel
+      .findById(id)
+      .populate('stateId', 'name code')
+      .populate('areaId', 'name localGovernment');
+    if (!market) {
+      throw new NotFoundException('Market not found');
+    }
+    return market;
+  }
+
+  async findByArea(areaId: string): Promise<Market[]> {
+    // ✅ Convert string to ObjectId
+    return this.marketModel
+      .find({ areaId: new Types.ObjectId(areaId), isActive: true })
+      .populate('stateId', 'name code')
+      .populate('areaId', 'name')
+      .sort({ name: 1 });
+  }
+
+  async findNearby(
+    longitude: number,
+    latitude: number,
+    maxDistanceKm: number = 5,
+  ): Promise<Market[]> {
+    return this.marketModel.find({
+      location: {
+        $near: {
+          $geometry: {
+            type: 'Point',
+            coordinates: [longitude, latitude],
+          },
+          $maxDistance: maxDistanceKm * 1000,
+        },
+      },
+      isActive: true,
+    })
+    .populate('stateId', 'name code')
+    .populate('areaId', 'name');
+  }
+
+  async update(id: string, dto: UpdateMarketDto): Promise<Market> {
+    const updateData: any = { ...dto };
+    if (dto.coordinates) {
+      updateData.location = {
+        type: 'Point',
+        coordinates: dto.coordinates,
+      };
+    }
+    delete updateData.coordinates;
+
+    const market = await this.marketModel
+      .findByIdAndUpdate(id, updateData, { new: true })
+      .populate('stateId', 'name code')
+      .populate('areaId', 'name');
+    if (!market) {
+      throw new NotFoundException('Market not found');
+    }
+    return market;
+  }
+
+  async incrementShopCount(id: string): Promise<void> {
+    await this.marketModel.findByIdAndUpdate(id, { $inc: { totalShops: 1 } });
+  }
+
+  async decrementShopCount(id: string): Promise<void> {
+    await this.marketModel.findByIdAndUpdate(id, { $inc: { totalShops: -1 } });
+  }
+
+  async delete(id: string): Promise<void> {
+    const result = await this.marketModel.deleteOne({ _id: id });
+    if (result.deletedCount === 0) {
+      throw new NotFoundException('Market not found');
+    }
+  }
+}
+import {
+  IsString,
+  IsOptional,
+  IsNumber,
+  IsArray,
+  IsEnum,
+  IsObject,
+  IsBoolean,
+  Min,
+} from 'class-validator';
+import { ProductType } from '../../common/enums/product-status.enum';
+
+export class CreateProductDto {
+  @IsString()
+  name: string;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @IsString()
+  @IsOptional()
+  sku?: string;
+
+  @IsString()
+  @IsOptional()
+  barcode?: string;
+
+  @IsString()
+  @IsOptional()
+  brand?: string;
+
+  @IsEnum(ProductType)
+  @IsOptional()
+  type?: ProductType;
+
+  @IsNumber()
+  @Min(0)
+  price: number;
+
+  @IsNumber()
+  @IsOptional()
+  originalPrice?: number;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  images?: string[];
+
+  @IsString()
+  category: string;
+
+  @IsString()
+  @IsOptional()
+  subcategory?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  tags?: string[];
+
+  @IsNumber()
+  @IsOptional()
+  quantity?: number = 0;
+
+  @IsString()
+  @IsOptional()
+  unit?: string;
+
+  @IsObject()
+  @IsOptional()
+  specifications?: Record<string, any>;
+
+  @IsBoolean()
+  @IsOptional()
+  inStock?: boolean = true;
+}
+import { IsOptional, IsString, IsEnum, IsNumber, IsMongoId, IsBoolean } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ProductStatus, ProductType } from '../../common/enums/product-status.enum';
+
+export class FilterProductDto {
+  @IsOptional()
+  @IsMongoId()
+  vendorId?: string;
+
+  @IsOptional()
+  @IsString()
+  category?: string;
+
+  @IsOptional()
+  @IsString()
+  subcategory?: string;
+
+  @IsOptional()
+  @IsString()
+  brand?: string;
+
+  @IsOptional()
+  @IsEnum(ProductType)
+  type?: ProductType;
+
+  @IsOptional()
+  @IsEnum(ProductStatus)
+  status?: ProductStatus;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  minPrice?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  maxPrice?: number;
+
+  // Location filters
+  @IsOptional()
+  @IsMongoId()
+  stateId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  areaId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  marketId?: string;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  inStock?: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  page?: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  limit?: number = 20;
+
+  @IsOptional()
+  @IsString()
+  sortBy?: string = 'createdAt';
+
+  @IsOptional()
+  @IsString()
+  sortOrder?: 'asc' | 'desc' = 'desc';
+}
+import {
+  IsString,
+  IsOptional,
+  IsNumber,
+  IsArray,
+  IsEnum,
+  IsObject,
+  IsBoolean,
+  Min,
+} from 'class-validator';
+import { ProductStatus, ProductType } from '../../common/enums/product-status.enum';
+
+export class UpdateProductDto {
+  @IsString()
+  @IsOptional()
+  name?: string;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @IsEnum(ProductType)
+  @IsOptional()
+  type?: ProductType;
+
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  price?: number;
+
+  @IsNumber()
+  @IsOptional()
+  originalPrice?: number;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  images?: string[];
+
+  @IsString()
+  @IsOptional()
+  category?: string;
+
+  @IsString()
+  @IsOptional()
+  subcategory?: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  tags?: string[];
+
+  @IsNumber()
+  @IsOptional()
+  quantity?: number;
+
+  @IsString()
+  @IsOptional()
+  unit?: string;
+
+  @IsObject()
+  @IsOptional()
+  specifications?: Record<string, any>;
+
+  @IsEnum(ProductStatus)
+  @IsOptional()
+  status?: ProductStatus;
+
+  @IsBoolean()
+  @IsOptional()
+  isActive?: boolean;
+}
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document, Types, Schema as MongooseSchema } from 'mongoose';
+import { ProductStatus, ProductType } from '../../common/enums/product-status.enum';
+
+@Schema({ timestamps: true })
+export class Product extends Document {
+  @Prop({ type: Types.ObjectId, ref: 'Vendor', required: true })
+  vendorId: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'CatalogItem' })
+  catalogItemId?: Types.ObjectId;
+
+  @Prop({ required: true })
+  name: string;
+
+  @Prop()
+  description?: string;
+
+  @Prop()
+  sku?: string;
+
+  @Prop()
+  barcode?: string;
+
+  @Prop()
+  brand?: string;
+
+  @Prop({ type: String, enum: ProductType, default: ProductType.SALE })
+  type: ProductType;
+
+  @Prop({ required: true })
+  price: number;
+
+  @Prop()
+  originalPrice?: number;
+
+  @Prop({ default: 'NGN' })
+  currency: string;
+
+  @Prop([String])
+  images?: string[];
+
+  @Prop({ required: true })
+  category: string;
+
+  @Prop()
+  subcategory?: string;
+
+  @Prop([String])
+  tags?: string[];
+
+  @Prop({ default: 0 })
+  quantity: number;
+
+  @Prop()
+  unit?: string;
+
+  @Prop({ type: Object })
+  specifications?: Record<string, any>;
+
+  @Prop({ type: String, enum: ProductStatus, default: ProductStatus.APPROVED })
+  status: ProductStatus;
+
+  @Prop({ default: 0 })
+  views: number;
+
+  @Prop({ default: 0 })
+  searchAppearances: number;
+
+  @Prop({ default: true })
+  isActive: boolean;
+
+  @Prop({ default: true })
+  inStock: boolean;
+
+  @Prop()
+  lastRestocked?: Date;
+
+  // Denormalized location data for faster searches
+  @Prop({ type: Types.ObjectId, ref: 'State' })
+  stateId?: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'Area' })
+  areaId?: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'Market' })
+  marketId?: Types.ObjectId;
+
+  // ✅ Geolocation — use Object type, define properly after schema creation
+  @Prop({ type: Object })
+  location?: {
+    type: 'Point';
+    coordinates: [number, number];
+  };
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const ProductSchema = SchemaFactory.createForClass(Product);
+
+// ✅ Define location path AFTER schema creation
+// This prevents auto-defaulting { type: "Point" } when no coordinates exist
+ProductSchema.path('location', new MongooseSchema(
+  {
+    type: {
+      type: String,
+      enum: ['Point'],
+      required: true,
+    },
+    coordinates: {
+      type: [Number],
+      required: true,
+    },
+  },
+  { _id: false }
+));
+
+// ✅ Location is NOT required at document level
+ProductSchema.path('location').required(false);
+
+// ✅ sparse: true — skips documents where location is absent
+ProductSchema.index({ location: '2dsphere' }, { sparse: true });
+ProductSchema.index({ vendorId: 1 });
+ProductSchema.index({ catalogItemId: 1 });
+ProductSchema.index({ category: 1, subcategory: 1 });
+ProductSchema.index({ status: 1, isActive: 1 });
+ProductSchema.index({ stateId: 1, areaId: 1, marketId: 1 });
+ProductSchema.index({ name: 'text', description: 'text', brand: 'text', tags: 'text' });
+ProductSchema.index({ price: 1 });
+ProductSchema.index({ sku: 1 });
+ProductSchema.index({ barcode: 1 });
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+  Request,
+} from '@nestjs/common';
+import { ProductsService } from './products.service';
+import { CreateProductDto } from './dto/create-product.dto';
+import { UpdateProductDto } from './dto/update-product.dto';
+import { FilterProductDto } from './dto/filter-product.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { Role } from '../common/enums/role.enum';
+
+@Controller('products')
+export class ProductsController {
+  constructor(private productsService: ProductsService) {}
+
+  @Get()
+  findAll(@Query() filterDto: FilterProductDto) {
+    return this.productsService.findAll(filterDto);
+  }
+
+  @Get('my-products')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.VENDOR)
+  getMyProducts(@Request() req) {
+    return this.productsService.getMyProducts(req.user.id);
+  }
+
+  @Get('vendor/:vendorId')
+  findByVendor(@Param('vendorId') vendorId: string) {
+    return this.productsService.findByVendor(vendorId);
+  }
+
+  @Get('nearby')
+  findNearby(
+    @Query('longitude') longitude: number,
+    @Query('latitude') latitude: number,
+    @Query('distance') distance?: number,
+    @Query('category') category?: string,
+  ) {
+    return this.productsService.findNearby(longitude, latitude, distance, category);
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string) {
+    return this.productsService.findById(id);
+  }
+
+  @Post()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.VENDOR)
+  create(@Body() dto: CreateProductDto, @Request() req) {
+    return this.productsService.create(dto, req.user.id);
+  }
+
+  @Put(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.VENDOR)
+  update(@Param('id') id: string, @Body() dto: UpdateProductDto, @Request() req) {
+    return this.productsService.update(id, dto, req.user.id);
+  }
+
+  @Put(':id/admin')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  adminUpdate(@Param('id') id: string, @Body() dto: UpdateProductDto) {
+    return this.productsService.adminUpdate(id, dto);
+  }
+
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.VENDOR)
+  delete(@Param('id') id: string, @Request() req) {
+    return this.productsService.delete(id, req.user.id);
+  }
+}
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { ProductsService } from './products.service';
+import { ProductsController } from './products.controller';
+import { Product, ProductSchema } from './schemas/product.schema';
+import { VendorsModule } from '../vendors/vendors.module';
+import { CatalogModule } from '../catalog/catalog.module';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([{ name: Product.name, schema: ProductSchema }]),
+    VendorsModule,
+    CatalogModule,
+  ],
+  controllers: [ProductsController],
+  providers: [ProductsService],
+  exports: [ProductsService],
+})
+export class ProductsModule {}
+import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose';
+import { Product } from './schemas/product.schema';
+import { CreateProductDto } from './dto/create-product.dto';
+import { UpdateProductDto } from './dto/update-product.dto';
+import { FilterProductDto } from './dto/filter-product.dto';
+import { VendorsService } from '../vendors/vendors.service';
+import { CatalogService } from '../catalog/catalog.service';
+import { ProductStatus } from '../common/enums/product-status.enum';
+
+// ✅ Helper to validate location object
+function isValidLocation(location: any): boolean {
+  return (
+    location &&
+    location.type === 'Point' &&
+    Array.isArray(location.coordinates) &&
+    location.coordinates.length === 2 &&
+    typeof location.coordinates[0] === 'number' &&
+    typeof location.coordinates[1] === 'number'
+  );
+}
