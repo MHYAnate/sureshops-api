@@ -43,6 +43,8 @@ export class ProductsService {
       if (catalogItem) catalogItemId = catalogItem._id as Types.ObjectId;
     }
 
+    
+
     // Build create data
     const createData: Record<string, any> = {
       ...dto,
@@ -165,6 +167,7 @@ export class ProductsService {
     };
   }
 
+  
   async findById(id: string): Promise<Product> {
     const product = await this.productModel
       .findById(id)

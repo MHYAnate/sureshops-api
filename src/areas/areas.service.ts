@@ -29,15 +29,18 @@ export class AreasService {
   }
 
   async findByState(stateId: string): Promise<Area[]> {
-    // ✅ Convert string to ObjectId — MongoDB stores stateId as ObjectId
+    // ✅ FIX: Validate the stateId before using it
+    if (!stateId || !/^[a-fA-F0-9]{24}$/.test(stateId)) {
+      return []; // Return empty array instead of crashing
+    }
+  
     const objectId = new Types.ObjectId(stateId);
-
+  
     return this.areaModel
       .find({ stateId: objectId, isActive: true })
       .populate('stateId', 'name code')
       .sort({ name: 1 });
   }
-
   async findById(id: string): Promise<Area> {
     const area = await this.areaModel
       .findById(id)

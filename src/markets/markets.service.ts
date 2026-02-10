@@ -88,7 +88,11 @@ export class MarketsService {
   }
 
   async findByArea(areaId: string): Promise<Market[]> {
-    // ✅ Convert string to ObjectId
+    // ✅ FIX: Validate the areaId before using it
+    if (!areaId || !/^[a-fA-F0-9]{24}$/.test(areaId)) {
+      return []; // Return empty array instead of crashing
+    }
+  
     return this.marketModel
       .find({ areaId: new Types.ObjectId(areaId), isActive: true })
       .populate('stateId', 'name code')
